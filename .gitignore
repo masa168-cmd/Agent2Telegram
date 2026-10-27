@@ -1,0 +1,62 @@
+# ── Dependencies ────────────────────────────────────────────────────────
+node_modules/
+.pnp
+.pnp.js
+
+# ── Package lock (committed: reproducible installs across npm versions) ──
+# package-lock.json is intentionally kept in version control.
+
+# ── pi coding agent ─────────────────────────────────────────────────────
+.pi/
+
+# ── Environment & secrets ───────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Build output ────────────────────────────────────────────────────────
+dist/
+build/
+*.tsbuildinfo
+
+# ── Test & coverage ─────────────────────────────────────────────────────
+.test-work/
+progress.md
+coverage/
+.nyc_output/
+
+# Upstream release workflow stays local, disabled and outside source synchronization.
+/.github/workflows/publish.yml
+
+# ── IDE / Editor ────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-*
+
+# ── OS garbage ──────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+ehthumbs.db
+ehthumbs_vista.db
+
+# ── Logs & temp files ───────────────────────────────────────────────────
+*.log
+npm-debug.log*
+*.tmp
+*.temp
+
+# ── Misc ────────────────────────────────────────────────────────────────
+*.tgz
+*.d.ts
+!lib/host-modules.d.ts
+
+
+# Review-loop artifacts (pi-subagents)
+review/
+.pi-subagents/
+
+# Inbound attachments saved by the DSH IM plugin (runtime data, not source)
+.dsh-im/

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json.schemastore.org/package",
+  "name": "pi-telegram-plus-ex",
+  "version": "0.1.0",
+  "description": "Telegram forum-topic control of online Pi sessions, with local multi-instance routing, interactive UI, files and streaming output",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "telegram",
+    "coding-agent",
+    "remote-control"
+  ],
+  "license": "MIT",
+  "author": "jalyfeng",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "files": [
+    "index.ts",
+    "lib/**/*.ts",
+    "!lib/__tests__/",
+    "CHANGELOG.md",
+    "docs/compatibility.md",
+    "docs/logging.md",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check:offline": "node scripts/offline-check.mjs",
+    "test:watch": "vitest",
+    "test:e2e": "node scripts/e2e/run-e2e.mjs",
+    "test:e2e:omp": "node scripts/e2e/run-e2e-omp.mjs",
+    "test:e2e:tui-bridge": "node scripts/e2e/run-e2e-tui-bridge.mjs",
+    "test:e2e:commands": "node scripts/e2e/run-e2e-commands.mjs",
+    "test:e2e:dialogs": "node scripts/e2e/run-e2e-dialogs.mjs",
+    "test:e2e:state": "node scripts/e2e/run-e2e-state.mjs",
+    "changelog:draft": "node scripts/changelog-draft.mjs",
+    "changelog:roll": "node scripts/changelog-version.mjs",
+    "changelog:check": "node scripts/changelog-version.mjs --check",
+    "prepublishOnly": "npm test && npm run typecheck && npm run changelog:check",
+    "test:e2e:real": "node scripts/e2e/real-telegram-smoke.mjs",
+    "test:e2e:parity": "node scripts/e2e/audit-parity.mjs"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "image": "https://pi.dev/logo-auto.svg",
+    "video": ""
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/masa168-cmd/pi-telegram-plus-ex"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "marked": "^18.0.4"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8",
+    "@earendil-works/pi-coding-agent": "1.4.0"
+  }
+}

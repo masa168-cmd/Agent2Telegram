@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
-import { extname, join, resolve } from "node:path";
+import { homedir } from "node:os";
+import { basename, extname, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createActiveTelegramTransport } from "./lib/active-transport.ts";
 import { registerTelegramAttachmentTool } from "./lib/attachments.ts";
@@ -30,8 +31,10 @@ import { getCurrentTelegramTurn } from "./lib/turn-context.ts";
 
 import { registerAllCommands } from "./lib/commands/register.ts";
 import { registerTgMenuCommand } from "./lib/commands/tg-menu.ts";
+import { registerContextBudgetCommand } from "./lib/commands/context-budget.ts";
+import { ContextBudgetRuntime } from "./lib/context-budget/runtime.ts";
 import type { TelegramConnectionState } from "./lib/commands/telegram-commands.ts";
-import { syncTelegramCommands, scheduleTelegramCommandRefresh, cancelTelegramCommandRefreshes } from "./lib/menu-commands.ts";
+import { syncTelegramCommands, scheduleTelegramCommandRefresh, cancelTelegramCommandRefreshes, getTelegramCommandKeyboard } from "./lib/menu-commands.ts";
 import { installTuiBridge, tuiBridge, getTuiCommands } from "./lib/tui-bridge.ts";
 import { SecretStore } from "./lib/tui/secrets.ts";
 import type { ResolvedTelegramConfig, TelegramConfig, TelegramTurn } from "./lib/types.ts";
@@ -81,6 +84,7 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
   const runtimeState = getTelegramPlusRuntimeState();
 
   let config: TelegramConfig = {};
+  let pairingFailures: { code?: string; count: number } = { count: 0 };
   let resolvedConfig: ResolvedTelegramConfig | undefined;
   let coordinator: TelegramInstanceCoordinator | undefined;
   let sessionContext: ExtensionContext | undefined;
@@ -136,14 +140,18 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
     return extension || ".bin";
   };
 
-  const buildIncomingAttachmentPath = (fileId: string, fileName: string | undefined, filePath: string, cwd: string): string => {
+  const buildIncomingAttachmentPath = (fileId: string, fileName: string | undefined, filePath: string, dir: string): string => {
     const ext = inferIncomingExtension(fileName, filePath);
     const base = fileName
       ? sanitizeIncomingFileName(fileName)
       : sanitizeIncomingFileName(filePath || "telegram-file");
     const safeFileId = fileId.replace(/[^a-zA-Z0-9_-]/g, "_");
-    return resolve(cwd, `${Date.now()}-${randomUUID().slice(0, 8)}-${safeFileId.slice(0, 18)}-${base}${ext}`);
+    return resolve(dir, `${Date.now()}-${randomUUID().slice(0, 8)}-${safeFileId.slice(0, 18)}-${base}${ext}`);
   };
+
+  /** Uploads live in one cache directory instead of the project: <XDG cache>/pi-telegram/uploads/<launch dir name>/. */
+  const incomingUploadDir = (cwd: string): string => join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"),
+    "pi-telegram", "uploads", sanitizeIncomingFileName(basename(resolve(cwd)) || "root"));
 
   const persistCurrentConfig = async (nextConfig = config): Promise<void> => {
     if (!resolvedConfig) resolvedConfig = await readResolvedTelegramConfig(currentSessionCwd());
@@ -248,6 +256,21 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
 
   const telegramCommands = new Map<string, TelegramCommandHandler>();
   const sessionDeps = { getSession: () => forum.hasRemoteOperation ? getOperationSession() : getActiveSession() };
+  const contextBudget = new ContextBudgetRuntime(pi, {
+    getSession: getActiveSession,
+    supported: () => tuiBridge.isAvailable() && tuiBridge.getHost() === "pi" && !tuiBridge.getUnsupportedReason(),
+    captureOperation: () => {
+      const remote = getCurrentTelegramTurn();
+      const lease = remote ? getSendLease() : undefined;
+      const token = config.botToken;
+      const user = config.allowedUserId;
+      const apiBase = config.apiBase;
+      return () => !disposed && (!remote || (lease !== undefined && lease === getSendLease()
+        && token === config.botToken && user === config.allowedUserId && apiBase === config.apiBase
+        && (!forum.hasRemoteOperation || forum.isCurrentOperation())));
+    },
+  });
+  registerContextBudgetCommand(pi, contextBudget);
   const tgConfigDeps = {
     ...sessionDeps,
     getConfig: () => config,
@@ -263,7 +286,7 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
   // registration only.
   const TUI_VISIBLE_COMMANDS = new Set([
     "tg",
-    "cwd", "cd", "status", "stop", "debug",
+    "cwd", "cd", "status", "stop", "debug", "restart",
   ]);
 
   registerAllCommands({
@@ -339,7 +362,7 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
   }, sessionDeps);
 
   pi.registerCommand("tg-forum", {
-    description: "SSH/local only: forum status or explicitly confirmed topic recovery",
+    description: "仅 SSH：查看话题状态；retry 在创建结果未知时确认后重试一次",
     handler: async (args, ctx) => {
       if (args.trim() !== "retry") {
         const target = forum.getTarget();
@@ -376,6 +399,42 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
     secrets: secretStore,
   });
 
+  // Shared by the controller (private-chat mode) and the forum receiver (an
+  // unpaired forum Bot accepts /pair only in a private chat).
+  const authorizeUser = async (userId: number | undefined, text?: string, chatType?: string): Promise<boolean | "paired"> => {
+    // Wrong /pair attempts are counted per code in memory; a new code starts at 0.
+    const failures = pairingFailures.code === config.pairingCode ? pairingFailures.count : 0;
+    const decision = authorizeTelegramUser(config, userId, text, config.botUsername, { chatType, failures });
+    pairingFailures = { code: decision.config.pairingCode, count: decision.failures };
+    if (decision.invalidated) {
+      config = decision.config;
+      if (resolvedConfig?.bot) {
+        await updateBot(resolvedConfig.bot.id, { pairingCode: undefined, pairingCodeExpiresAt: undefined })
+          .catch(indexLog.swallow("warn", "persist invalidated pairing code failed"));
+      }
+      getActiveSession()?.extensionRunner.getUIContext().notify(
+        "Telegram pairing code was cancelled (expired or too many wrong attempts). Generate a new one via /tg → Bots.", "warning");
+      refreshStatus();
+      return false;
+    }
+    if (!decision.authorized) return false;
+    if (decision.config !== config) {
+      config = decision.config;
+      await persistCurrentConfig(config);
+      // v3: allowedUserId is bot identity (registry), not a project-binding
+      // field. persistCurrentConfig writes only the project binding, so on a
+      // successful /pair we must also write allowedUserId to the bot record
+      // or the pairing is lost on restart.
+      if (decision.paired && resolvedConfig?.bot && decision.config.allowedUserId !== undefined) {
+        await updateBot(resolvedConfig.bot.id, { allowedUserId: decision.config.allowedUserId, pairingCode: undefined, pairingCodeExpiresAt: undefined })
+          .catch(indexLog.swallow("warn", "persist paired allowedUserId to bot registry failed"));
+        switchResolvedConfig(await readResolvedTelegramConfig(currentSessionCwd()));
+      }
+      refreshStatus();
+    }
+    return decision.paired ? "paired" : true;
+  };
+
   const controller = createTelegramController({
     getSession: getOperationSession,
     isCurrent: () => !disposed && (!forum.enabled || forum.isCurrentOperation()),
@@ -386,25 +445,7 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
     transport,
     secrets: secretStore,
     ui,
-    authorizeUser: async (userId, text) => {
-      const decision = authorizeTelegramUser(config, userId, text, config.botUsername);
-      if (!decision.authorized) return false;
-      if (decision.config !== config) {
-        config = decision.config;
-        await persistCurrentConfig(config);
-        // v3: allowedUserId is bot identity (registry), not a project-binding
-        // field. persistCurrentConfig writes only the project binding, so on a
-        // successful /pair we must also write allowedUserId to the bot record
-        // or the pairing is lost on restart.
-        if (decision.paired && resolvedConfig?.bot && decision.config.allowedUserId !== undefined) {
-          await updateBot(resolvedConfig.bot.id, { allowedUserId: decision.config.allowedUserId })
-            .catch(indexLog.swallow("warn", "persist paired allowedUserId to bot registry failed"));
-          switchResolvedConfig(await readResolvedTelegramConfig(currentSessionCwd()));
-        }
-        refreshStatus();
-      }
-      return decision.paired ? "paired" : true;
-    },
+    authorizeUser,
     telegramCommands,
     saveIncomingTelegramAttachment: async (fileId, fileName, kind) => {
       const token = config.botToken;
@@ -424,10 +465,11 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
       ensureCurrent();
       const data = await downloadTelegramFile(token, fileInfo.file_path, undefined, apiBase);
       ensureCurrent();
-      await mkdir(cwd, { recursive: true });
+      const uploadDir = incomingUploadDir(cwd);
+      await mkdir(uploadDir, { recursive: true, mode: 0o700 });
       ensureCurrent();
-      const outputPath = buildIncomingAttachmentPath(fileId, fileName || kind, fileInfo.file_path, cwd);
-      await writeFile(outputPath, data, { flag: "wx" });
+      const outputPath = buildIncomingAttachmentPath(fileId, fileName || kind, fileInfo.file_path, uploadDir);
+      await writeFile(outputPath, data, { flag: "wx", mode: 0o600 });
       return outputPath;
     },
     getActiveTurn: (chatId: number, messageThreadId?: number) => activeTurns.get(activeTurnKey(chatId, messageThreadId)),
@@ -520,6 +562,16 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
     handleUpdate: async (update) => {
       refreshStatus();
       if (forum.enabled) {
+        // Unpaired forum Bot: the only accepted input is /pair in a private chat.
+        if (config.allowedUserId === undefined) {
+          const m = update.message;
+          if (!m || m.chat?.type !== "private" || typeof m.chat.id !== "number" || !isActiveInstance()) return;
+          const result = await authorizeUser(m.from?.id, m.text ?? "", "private");
+          if (result === "paired") {
+            await rawTransport.sendText(m.chat.id, "✅ Telegram user paired.", undefined, m.message_id, undefined, { maxAttempts: 1 });
+          }
+          return;
+        }
         if (!authorizedForumUpdate(update, config.forumChatId!, config.allowedUserId!)) return;
         const receiver = coordinator;
         const requestConfig = { ...config };
@@ -767,9 +819,18 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
     if (forumLease && announcedForumLease !== forumLease) {
       announcedForumLease = forumLease;
       const target = forum.getTarget()!;
-      void transport.sendText(target.chatId,
-        `<b>pi-telegram-plus-ex · 在线</b>\n会话 ${escapeHtml(target.sessionId.slice(0, 8))}；本话题只控制此在线会话。\n切换会话后旧话题离线，不会自动启动。`, target.threadId)
-        .catch(indexLog.swallow("warn", "send forum online notice failed"));
+      const apiBase = config.apiBase;
+      // The keyboard lists the synced menu, so wait for the host catalog and the menu sync
+      // (shared with the startup sync when one is in flight) before posting the notice.
+      void (async () => {
+        await tuiBridge.ready();
+        await syncTelegramCommands(token, pi, apiBase);
+        if (disposed || config.botToken !== token || forum.lease() !== forumLease) return;
+        const keyboard = getTelegramCommandKeyboard(token, apiBase);
+        await transport.sendText(target.chatId,
+          `<b>— 会话 ${escapeHtml(target.sessionId.slice(0, 8))} 已接入 —</b>\n本话题对应此目录；/new、恢复会话后仍在本话题，以上为之前会话的内容。`, target.threadId,
+          undefined, undefined, keyboard.length > 0 ? { replyKeyboard: keyboard } : undefined);
+      })().catch(indexLog.swallow("warn", "send forum online notice failed"));
     }
     if (pendingHandoffs.size > 0) {
       await polling.stop();
@@ -930,6 +991,8 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
   function disposeRuntime(): void {
     if (disposed) return;
     disposed = true;
+    try { contextBudget.dispose(); }
+    catch { sessionContext?.ui.notify("上下文预算退出回退未确认；请通过 SSH 检查实际窗口与阈值。", "error"); }
     void forum.close();
     const currentCoordinator = coordinator;
     if (coordinatorTimer) clearInterval(coordinatorTimer);
@@ -1001,6 +1064,13 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
     if (config.botToken) {
       const pairedConfig = ensureTelegramPairingCode(config);
       if (pairedConfig !== config) {
+        // The code lives on the bot record; persistCurrentConfig only writes the
+        // project binding and re-reads the registry, so store a fresh code there first.
+        if (resolvedConfig?.bot && pairedConfig.pairingCode !== config.pairingCode) {
+          await updateBot(resolvedConfig.bot.id, {
+            pairingCode: pairedConfig.pairingCode, pairingCodeExpiresAt: pairedConfig.pairingCodeExpiresAt,
+          }).catch(indexLog.swallow("warn", "persist fresh pairing code failed"));
+        }
         config = pairedConfig;
         await persistCurrentConfig(config);
       }
@@ -1012,6 +1082,8 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
     // Let the TUI bridge capture InteractiveMode before building the dynamic
     // command menu; `ready()` is bounded and never blocks startup indefinitely.
     await tuiBridge.ready();
+    try { contextBudget.start(ctx); }
+    catch (error) { ctx.ui.notify(`上下文预算未应用：${error instanceof Error ? error.message : "请检查配置及兼容桥接。"}`, "error"); }
     try { await syncTelegramCommands(config.botToken, pi, config.apiBase); } catch (err) { indexLog.debug("syncTelegramCommands on startup failed (non-critical)", { err }); }
     // Bridge may capture host TUI after initial sync; refresh menu with dynamic host commands.
     scheduleTelegramCommandRefresh(config.botToken, pi, config.apiBase, 300);
@@ -1019,6 +1091,11 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
     lastStatusError = tuiBridge.isAvailable() ? undefined : `TUI bridge unavailable: ${tuiBridge.getHost()}`;
     heartbeat.startStatusHeartbeat(refreshStatus);
     refreshStatus();
+  });
+
+  pi.on("model_select", (_event, ctx) => {
+    try { contextBudget.modelSelected(ctx); }
+    catch (error) { ctx.ui.notify(`上下文预算模型切换未确认：${error instanceof Error ? error.message : "请检查并重载。"}`, "error"); }
   });
 
   pi.on("session_shutdown", () => {

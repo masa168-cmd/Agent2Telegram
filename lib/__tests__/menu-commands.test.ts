@@ -5,6 +5,8 @@ import type { CapturedAgentSession, TelegramTransport } from "../types.ts";
 import {
   buildTelegramMenuCommands,
   buildTelegramMenuCommandsFull,
+  getTelegramCommandKeyboard,
+  getTelegramMenuAll,
   getTelegramMenuOverflow,
   scheduleTelegramCommandRefresh,
   syncTelegramCommands,
@@ -32,7 +34,7 @@ describe("Telegram command menu", () => {
 
         expect(commands).toContainEqual({
             command: "tg",
-            description: "Open the Telegram management menu",
+            description: "打开 Telegram 管理菜单",
         });
     });
 
@@ -71,7 +73,7 @@ describe("Telegram command menu", () => {
 
         await controller.handleMessage({
             message_id: 1,
-            chat: { id: 42 },
+            chat: { id: 42, type: "private" },
             from: { id: 7 },
             text: "/tg-bot-add",
         });
@@ -105,7 +107,7 @@ describe("dynamic TUI catalog in BotMenu", () => {
     }));
     const { commands, overflow } = buildTelegramMenuCommandsFull({ getCommands: () => [] }, { tuiCommands });
     expect(commands).toHaveLength(100);
-    expect(commands[99]).toEqual({ command: "more", description: "Show more commands" });
+    expect(commands[99]).toEqual({ command: "more", description: "更多命令" });
     expect(overflow.length).toBeGreaterThan(0);
     expect(overflow.some((c) => c.command === "more")).toBe(false);
   });
@@ -155,20 +157,33 @@ describe("dynamic TUI catalog in BotMenu", () => {
     expect(names.has("scoped_models")).toBe(false);
   });
 
-  it("prefers the live host description over the static copy", () => {
+  it("shows Chinese wording for plugin and Pi built-in commands, keeping other extensions' text", () => {
     const commands = buildTelegramMenuCommands(
-      { getCommands: () => [] },
+      { getCommands: () => [hostCommand("my-ext", "Third-party wording"), hostCommand("tg-forum", "仅 SSH"),
+        hostCommand("tg-setup", "安装入口")] },
       {
         tuiCommands: [
           { name: "model", description: "Select model (opens selector UI)", source: "builtin" as const },
+          { name: "compact", description: "Compact now", source: "builtin" as const },
+          { name: "scoped-models", description: "Enable/disable models", source: "builtin" as const },
           { name: "quit", description: "Quit pi", source: "builtin" as const },
+          { name: "exit", description: "Exit pi", source: "builtin" as const },
         ],
       },
     );
-    expect(commands.find((c) => c.command === "model")?.description).toBe("Select model (opens selector UI)");
-    expect(commands.find((c) => c.command === "quit")?.description).toBe("Quit pi");
-    // Entries the catalog does not describe keep the fallback wording.
-    expect(commands.find((c) => c.command === "tg")?.description).toBe("Open the Telegram management menu");
+    const describe = (name: string) => commands.find((c) => c.command === name)?.description;
+    expect(describe("model")).toBe("查看或切换当前模型");
+    expect(describe("compact")).toBe("手动压缩会话上下文");
+    expect(commands.some((c) => c.command === "scoped_models")).toBe(false); // terminal-bound, hidden
+    expect(describe("restart")).toBe("重启 Pi 并恢复当前会话（需 tmux）");
+    expect(describe("tg")).toBe("打开 Telegram 管理菜单");
+    expect(describe("my_ext")).toBe("Third-party wording");
+    // Quitting is terminal-only; Telegram never lists it even when the host does.
+    expect(commands.some((c) => c.command === "quit" || c.command === "exit")).toBe(false);
+    // SSH-only commands are registered but never offered in the BotMenu.
+    for (const hidden of ["tg_forum", "tg_setup", "login", "logout"]) {
+      expect(commands.some((c) => c.command === hidden)).toBe(false);
+    }
   });
 
   it("keeps plugin-served commands even when the host catalog lacks them", () => {
@@ -318,7 +333,7 @@ describe("/more overflow keyboard", () => {
       getConfig: () => ({ botToken: "token-more-flow", apiBase: "https://api.example" }) as any,
     });
 
-    await controller.handleMessage({ message_id: 1, chat: { id: 42 }, from: { id: 7 }, text: "/more" });
+    await controller.handleMessage({ message_id: 1, chat: { id: 42, type: "private" }, from: { id: 7 }, text: "/more" });
     expect(transport.sendButtons).toHaveBeenCalledTimes(1);
     const rows = (transport.sendButtons.mock.calls[0] as unknown as unknown[])[2] as Array<Array<{ text: string; value: string }>>;
     const commandButtons = rows.flat().filter((button) => button.value.startsWith("tgplus:run:"));
@@ -331,9 +346,73 @@ describe("/more overflow keyboard", () => {
     await controller.handleCallbackQuery({
       id: "q1",
       from: { id: 7 },
-      message: { chat: { id: 42 }, message_id: 5 },
+      message: { chat: { id: 42, type: "private" }, message_id: 5 },
       data: target.value,
     } as any);
     await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe("input-area command keyboard", () => {
+  it("lists every synced menu command as /name buttons, 3 per row, capped at 99", async () => {
+    const pi = { getCommands: () => Array.from({ length: 140 }, (_, index) => ({
+      name: `cmd_${index}`, description: `Command ${index}`, source: "extension" as const })) } as any;
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ ok: true, result: true }), {
+      status: 200, headers: { "content-type": "application/json" } })));
+    try { await syncTelegramCommands("token-all-flow", pi, "https://api.example"); } finally { vi.unstubAllGlobals(); }
+    const all = getTelegramMenuAll("token-all-flow", "https://api.example");
+    expect(all.some((c) => c.command === "more")).toBe(false);
+    const keyboard = getTelegramCommandKeyboard("token-all-flow", "https://api.example");
+    expect(keyboard).toHaveLength(33);
+    expect(keyboard.every((row) => row.length === 3)).toBe(true);
+    expect(keyboard.flat()).toEqual(all.slice(0, 99).map((c) => `/${c.command}`));
+    expect(getTelegramCommandKeyboard("token-never-synced")).toEqual([]);
+  });
+
+  it("swaps the old 📋 命令 button for the keyboard, expires old list pages, and ignores keyboard-notice replies", async () => {
+    const pi = { getCommands: () => [{ name: "cmd_a", description: "A", source: "extension" as const }] } as any;
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ ok: true, result: true }), {
+      status: 200, headers: { "content-type": "application/json" } })));
+    try { await syncTelegramCommands("token-kb-flow", pi, "https://api.example"); } finally { vi.unstubAllGlobals(); }
+    const transport = { sendButtons: vi.fn(async () => ({ message_id: 5 })), editButtons: vi.fn(async () => undefined),
+      sendText: vi.fn(async () => [{ message_id: 6 }]), answerCallbackQuery: vi.fn(async () => undefined) };
+    const prompts: string[] = [];
+    const session = { prompt: vi.fn(async (text: string) => { prompts.push(text); }), isStreaming: false,
+      extensionRunner: { getUIContext: () => ({}), setUIContext: () => {},
+      getCommand: () => undefined, createCommandContext: () => ({}) } } as any;
+    const controller = createTelegramController({ getSession: () => session, transport: transport as any,
+      ui: { create: () => ({}) as any, resolveInput: () => ({ handled: false }), isSensitiveInput: () => false,
+        hasPendingInput: () => false, dispose: () => undefined },
+      authorizeUser: async () => true, setActiveChatId: async () => undefined, getBotUsername: () => "test_bot",
+      telegramCommands: new Map(), getActiveTurn: () => undefined,
+      beginTelegramTurn: (chatId: number) => ({ chatId, queuedAttachments: [] }), endTelegramTurn: () => undefined,
+      getConfig: () => ({ botToken: "token-kb-flow", apiBase: "https://api.example" }) as any });
+
+    await controller.handleMessage({ message_id: 1, chat: { id: 42, type: "private" }, from: { id: 7 }, text: "📋 命令" });
+    expect(session.prompt).not.toHaveBeenCalled();
+    expect(transport.sendText).toHaveBeenCalledTimes(1);
+    const expected = getTelegramCommandKeyboard("token-kb-flow", "https://api.example");
+    expect(expected.flat()).toContain("/cmd_a");
+    expect((transport.sendText.mock.calls[0] as unknown[])[5]).toEqual({ replyKeyboard: expected });
+
+    await controller.handleCallbackQuery({ id: "q", from: { id: 7 }, data: "tgplus:cmds:1",
+      message: { chat: { id: 42, type: "private" }, message_id: 5 } } as any);
+    expect(transport.editButtons).not.toHaveBeenCalled();
+    expect(String((transport.sendText.mock.calls[1] as unknown[])[1])).toContain("已过期");
+
+    const bot = { id: 1, is_bot: true, first_name: "ovh" };
+    await controller.handleMessage({ message_id: 2, chat: { id: 42, type: "private" }, from: { id: 7 }, text: "hello",
+      reply_to_message: { message_id: 9, chat: { id: 42, type: "private" }, from: bot,
+        text: "— 会话 01a18cfd 已接入 —\n本话题对应此目录；" } } as any);
+    await vi.waitFor(() => expect(prompts).toHaveLength(1));
+    expect(prompts[0]).not.toContain("[telegram quoted message]");
+    expect(prompts[0]).not.toContain("已接入");
+
+    // A reply to any other bot message is still a real quote.
+    await controller.handleMessage({ message_id: 3, chat: { id: 42, type: "private" }, from: { id: 7 }, text: "why",
+      reply_to_message: { message_id: 10, chat: { id: 42, type: "private" }, from: bot, text: "earlier answer" } } as any);
+    await vi.waitFor(() => expect(prompts).toHaveLength(2));
+    expect(prompts[1]).toContain("[telegram quoted message]");
+    expect(prompts[1]).toContain("earlier answer");
   });
 });

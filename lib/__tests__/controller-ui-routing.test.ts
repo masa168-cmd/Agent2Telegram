@@ -112,8 +112,8 @@ describe("Telegram controller UI routing", () => {
       tuiBridge: availableBridge(),
     });
 
-    await controller.handleMessage({ message_id: 1, chat: { id: 111 }, from: { id: 1 }, text: "/status" });
-    await controller.handleMessage({ message_id: 2, chat: { id: 222 }, from: { id: 1 }, text: "/cwd" });
+    await controller.handleMessage({ message_id: 1, chat: { id: 111, type: "private" }, from: { id: 1 }, text: "/status" });
+    await controller.handleMessage({ message_id: 2, chat: { id: 222, type: "private" }, from: { id: 1 }, text: "/cwd" });
     await new Promise((r) => setTimeout(r, 0));
     a.resolve();
     await new Promise((r) => setTimeout(r, 0));
@@ -172,7 +172,7 @@ describe("Telegram controller UI routing", () => {
       tuiBridge: availableBridge(),
     });
 
-    await controller.handleMessage({ message_id: 1, chat: { id: 111 }, from: { id: 1 }, text: "/status" });
+    await controller.handleMessage({ message_id: 1, chat: { id: 111, type: "private" }, from: { id: 1 }, text: "/status" });
     await vi.waitFor(() => expect(currentUi).not.toBe(tuiUi));
 
     // A local terminal call while the command holds the UI: no Telegram turn is
@@ -230,8 +230,8 @@ describe("Telegram controller UI routing", () => {
       tuiBridge: availableBridge(),
     });
 
-    await controller.handleMessage({ message_id: 1, chat: { id: 555 }, from: { id: 1 }, text: "/status" });
-    await controller.handleMessage({ message_id: 2, chat: { id: 555 }, from: { id: 1 }, text: "/cwd" });
+    await controller.handleMessage({ message_id: 1, chat: { id: 555, type: "private" }, from: { id: 1 }, text: "/status" });
+    await controller.handleMessage({ message_id: 2, chat: { id: 555, type: "private" }, from: { id: 1 }, text: "/cwd" });
     await new Promise((r) => setTimeout(r, 0));
     a.resolve();
     await new Promise((r) => setTimeout(r, 0));
@@ -288,8 +288,8 @@ describe("Telegram controller UI routing", () => {
       endTelegramTurn: () => undefined,
     });
 
-    await controller.handleMessage({ message_id: 101, message_thread_id: 10, chat: { id: 111 }, from: { id: 1 }, text: "/cwd" });
-    await controller.handleMessage({ message_id: 201, message_thread_id: 20, chat: { id: 111 }, from: { id: 1 }, text: "/cd" });
+    await controller.handleMessage({ message_id: 101, message_thread_id: 10, chat: { id: 111, type: "private" }, from: { id: 1 }, text: "/cwd" });
+    await controller.handleMessage({ message_id: 201, message_thread_id: 20, chat: { id: 111, type: "private" }, from: { id: 1 }, text: "/cd" });
     await new Promise((r) => setTimeout(r, 0));
     a.resolve();
     await new Promise((r) => setTimeout(r, 0));
@@ -348,7 +348,7 @@ describe("Telegram controller UI routing", () => {
       endTelegramTurn: () => undefined,
     });
 
-    await controller.handleMessage({ message_id: 1, chat: { id: 555 }, from: { id: 1 }, text: "/status" });
+    await controller.handleMessage({ message_id: 1, chat: { id: 555, type: "private" }, from: { id: 1 }, text: "/status" });
     await new Promise((r) => setTimeout(r, 10));
     expect(currentUi).not.toBe(tuiUi);
 
@@ -537,7 +537,7 @@ class Pi085RunnerDouble {
       endTelegramTurn: () => undefined,
     });
 
-    await controller.handleMessage({ message_id: 1, chat: { id: 777 }, from: { id: 1 }, text: "/pair" });
+    await controller.handleMessage({ message_id: 1, chat: { id: 777, type: "private" }, from: { id: 1 }, text: "/pair" });
     await new Promise((r) => setTimeout(r, 80));
 
     expect(commandError).toBeUndefined();
@@ -575,7 +575,7 @@ class Pi085RunnerDouble {
     expect(sent.find((item) => item.text.includes("Local Prompt"))).toBeUndefined();
 
     // Running a subsequent Telegram command must also restore the exact original UI context
-    await controller.handleMessage({ message_id: 2, chat: { id: 777 }, from: { id: 1 }, text: "/pair" });
+    await controller.handleMessage({ message_id: 2, chat: { id: 777, type: "private" }, from: { id: 1 }, text: "/pair" });
     await new Promise((r) => setTimeout(r, 80));
     await new Promise((r) => setTimeout(r, 180));
     expect(runner.getUIContext()).toBe(originalUiContext);
@@ -803,7 +803,7 @@ class Pi085RunnerDouble {
       endTelegramTurn: () => undefined,
     });
 
-    await controller.handleMessage({ message_id: 1, chat: { id: 777 }, from: { id: 1 }, text: "/pair" });
+    await controller.handleMessage({ message_id: 1, chat: { id: 777, type: "private" }, from: { id: 1 }, text: "/pair" });
     await vi.waitFor(() => expect(uiRuntime.hasPendingInput(777)).toBe(true));
 
     const sentConfirm = sent.find((item) => item.text.includes("New session"));
@@ -867,7 +867,7 @@ class Pi085RunnerDouble {
       endTelegramTurn: () => undefined,
     });
 
-    await controller.handleMessage({ message_id: 1, chat: { id: 888 }, from: { id: 1 }, text: "/status" });
+    await controller.handleMessage({ message_id: 1, chat: { id: 888, type: "private" }, from: { id: 1 }, text: "/status" });
 
     await vi.waitFor(() => expect(sent.find((item) => item.text.includes("Tool approval"))).toBeDefined());
     const approval = sent.find((item) => item.text.includes("Tool approval"));
@@ -952,7 +952,7 @@ class Pi085RunnerDouble {
       endTelegramTurn: () => undefined,
     });
 
-    await controller.handleMessage({ message_id: 1, chat: { id: 999 }, from: { id: 1 }, text: "/tg" });
+    await controller.handleMessage({ message_id: 1, chat: { id: 999, type: "private" }, from: { id: 1 }, text: "/tg" });
 
     await vi.waitFor(() => expect(sent.find((item) => item.text.includes("Ask question"))).toBeDefined());
     const ask = sent.find((item) => item.text.includes("Ask question"));

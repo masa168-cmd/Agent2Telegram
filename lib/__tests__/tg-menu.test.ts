@@ -26,6 +26,7 @@ import { readBotRegistry, readProjectBinding, addBot, writeProjectBinding, clear
 import type { CapturedAgentSession } from "../types.ts";
 import type { BotRecord, ResolvedTelegramConfig, TelegramConfig } from "../types.ts";
 import type * as pairingModule from "../pairing.ts";
+import { runWithTelegramTurn } from "../turn-context.ts";
 
 function makeBot(overrides: Partial<BotRecord> = {}): BotRecord {
   return {
@@ -34,7 +35,10 @@ function makeBot(overrides: Partial<BotRecord> = {}): BotRecord {
     token: overrides.token ?? "tok-1",
     ...(overrides.botUsername === undefined ? {} : { botUsername: overrides.botUsername }),
     ...(overrides.allowedUserId === undefined ? {} : { allowedUserId: overrides.allowedUserId }),
-    ...(overrides.pairingCode === undefined ? {} : { pairingCode: overrides.pairingCode }),
+    ...(overrides.pairingCode === undefined ? {} : {
+      pairingCode: overrides.pairingCode,
+      pairingCodeExpiresAt: overrides.pairingCodeExpiresAt ?? Date.now() + 10 * 60_000,
+    }),
   };
 }
 
@@ -177,15 +181,26 @@ describe("/tg multi-level menu", () => {
     expect([...commands.keys()]).toContain("tg");
   });
 
-  it("hides global Bot/project maintenance and offers online topics in forum mode", async () => {
+  it("hides global Bot/project maintenance and offers online topics in forum mode for Telegram", async () => {
     config = { forumChatId: -100123 };
-    const { ui, notifyCalls } = makeScriptedUi({ select: ["🤖 Bots", "❌ Close"] });
-    await commands.get("tg")!("", makeCtx(ui));
+    const { ui, notifyCalls } = makeScriptedUi({ select: [] });
+    await runWithTelegramTurn({ chatId: -100123, messageThreadId: 11, sourceMessageId: 51, queuedAttachments: [] },
+      () => commands.get("tg")!("", makeCtx(ui)));
     const options = ui.select.mock.calls[0][1];
     expect(options).not.toContain("🤖 Bots"); expect(options).not.toContain("📁 Project");
     expect(options).toContain("🧵 Online sessions");
-    expect(notifyCalls.some(call => call.message.includes("SSH"))).toBe(true);
+    expect(notifyCalls).toEqual([]);
     expect(ui.inputSecret).not.toHaveBeenCalled();
+  });
+
+  it("shows Bot/project maintenance in SSH even when forum mode is enabled", async () => {
+    config = { forumChatId: -100123 };
+    const { ui } = makeScriptedUi({ select: [] });
+    await commands.get("tg")!("", makeCtx(ui));
+    const options = ui.select.mock.calls[0][1];
+    expect(options).toContain("🤖 Bots");
+    expect(options).toContain("📁 Project");
+    expect(options).toContain("🧵 Online sessions");
   });
 
   it("lets a follower list online topic links without switching the polling leader or replaying history", async () => {

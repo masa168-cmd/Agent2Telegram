@@ -15,6 +15,7 @@ import type { DialogModel, EntryInfo } from "../tui/model.ts";
 import type { TelegramTurn } from "../types.ts";
 import type { CommandScope } from "../tui/origin.ts";
 import { SecretStore } from "../tui/secrets.ts";
+import { installRace, takePendingRace } from "../tui/race.ts";
 import { isCredentialDialog } from "../forum-policy.ts";
 
 const turn = (chatId: number, sourceMessageId = 7): TelegramTurn => ({
@@ -684,6 +685,349 @@ describe("dialog broker", () => {
     expect(keys).toEqual([]);
     expect(transport.removed).toEqual([]);
     expect(broker.hasActive()).toBe(true);
+  });
+});
+
+/** Simulate one API request whose response arrives after any number of refreshes. */
+function holdInitialSend(transport: ReturnType<typeof fakeTransport>) {
+  const pending = Promise.withResolvers<{ message_id: number }>();
+  const original = transport.sendButtons;
+  let first = true;
+  const send = vi.spyOn(transport, "sendButtons").mockImplementation((chatId, text, rows) => {
+    if (!first) return original(chatId, text, rows);
+    first = false;
+    transport.sent.push({ chatId, text, rows });
+    return pending.promise;
+  });
+  return { ...pending, send };
+}
+
+describe("dialog delivery and answer regressions", () => {
+  it("keeps one initial send while its message ID is still pending", async () => {
+    vi.useFakeTimers();
+    const { broker, transport, focus } = makeBroker({
+      turns: [turn(42)],
+      entry: { kind: "input", title: "New value for mockField", source: "pi" },
+    });
+    const pending = holdInitialSend(transport);
+    const { send } = pending;
+    try {
+      focus.openDialog({ getValue: () => "", handleInput: () => undefined });
+      await settle();
+      await vi.advanceTimersByTimeAsync(REFRESH_MS * 3);
+      expect(send).toHaveBeenCalledTimes(1);
+
+      pending.resolve({ message_id: 901 });
+      await settle();
+      expect(broker.current()?.telegram?.messageId).toBe(901);
+      await vi.advanceTimersByTimeAsync(REFRESH_MS * 2);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(transport.edits).toEqual([]);
+    } finally {
+      pending.resolve({ message_id: 901 });
+      await settle();
+      broker.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("attributes a synchronously closed text answer to Telegram without echoing it", async () => {
+    const { broker, transport, focus } = makeBroker({
+      turns: [turn(42)],
+      entry: { kind: "input", title: "Mock field", source: "pi" },
+    });
+    try {
+      focus.openDialog({
+        getValue: () => "",
+        handleInput: (input: string) => { if (input === "\r") focus.closeToEditor(); },
+      });
+      await settle();
+      const session = broker.current()!;
+      expect(broker.handleText(session, "synthetic-answer")).toEqual({ handled: true });
+      await settle();
+      expect(broker.current()).toBeUndefined();
+      expect(session.closedBy).toBe("telegram");
+      expect(transport.edits.at(-1)?.text).toBe("✅ Submitted");
+      expect(transport.edits.at(-1)?.rows).toEqual([]);
+      expect(JSON.stringify(transport.edits)).not.toContain("synthetic-answer");
+    } finally { broker.stop(); }
+  });
+
+  it("keeps a raced text answer's origin through asynchronous host closure", async () => {
+    vi.useFakeTimers();
+    const entry: EntryInfo = { kind: "input", title: "Mock raced field", source: "pi" };
+    const { broker, transport, focus } = makeBroker({ turns: [turn(42)], entry });
+    const host = {
+      input(_title: string, _placeholder?: string, opts?: { signal?: AbortSignal }) {
+        entry.race = takePendingRace();
+        focus.openDialog({ getValue: () => "", handleInput: () => undefined });
+        return new Promise<unknown>((resolve) => {
+          opts?.signal?.addEventListener("abort", () => {
+            setTimeout(() => { focus.closeToEditor(); resolve(undefined); }, REFRESH_MS * 2 + 20);
+          }, { once: true });
+        });
+      },
+    };
+    try {
+      expect(installRace(host, "input")).toBe(true);
+      const answer = host.input("Mock raced field");
+      await settle();
+      const session = broker.current()!;
+      expect(broker.handleText(session, "synthetic-raced-answer")).toEqual({ handled: true });
+      await expect(answer).resolves.toBe("synthetic-raced-answer");
+      expect(session.state).toBe("resolving");
+      expect(broker.handleText(session, "late-synthetic-answer").toast).toContain("already been answered");
+      await vi.advanceTimersByTimeAsync(REFRESH_MS * 2 + 20);
+      await settle();
+      expect(session.closedBy).toBe("telegram");
+      expect(transport.edits.at(-1)?.text).toBe("✅ Submitted");
+      expect(broker.current()).toBeUndefined();
+    } finally { broker.stop(); vi.useRealTimers(); }
+  });
+
+  it.each(["input", "editor"] as const)("preserves a non-raced %s submission through delayed focus closure", async (kind) => {
+    vi.useFakeTimers();
+    const { broker, transport, focus } = makeBroker({ turns: [turn(42)],
+      entry: { kind, title: "Mock delayed field", source: "pi" } });
+    try {
+      focus.openDialog({
+        getValue: () => "", getText: () => "", setText: () => undefined,
+        handleInput: (input: string) => {
+          if (input === "\r") setTimeout(() => focus.closeToEditor(), REFRESH_MS * 2 + 20);
+        },
+      });
+      await settle();
+      const session = broker.current()!;
+      expect(broker.handleText(session, "synthetic-delayed-answer")).toEqual({ handled: true });
+      expect(session.state).toBe("open");
+      expect(session.closedBy).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(REFRESH_MS * 2 + 20);
+      expect(session.closedBy).toBe("telegram");
+      expect(transport.edits.at(-1)?.text).toBe("✅ Submitted");
+    } finally { broker.stop(); vi.useRealTimers(); }
+  });
+
+  it("does not dispatch a first send after the broker was stopped in the same turn", async () => {
+    const { broker, transport, focus } = makeBroker({ turns: [turn(42)] });
+    const send = vi.spyOn(transport, "sendButtons");
+    try {
+      focus.openDialog(selector(focus).component);
+      broker.stop();
+      await settle();
+      expect(send).not.toHaveBeenCalled();
+      expect(broker.current()).toBeUndefined();
+    } finally { broker.stop(); }
+  });
+
+  it("releases the pending-send guard when the transport suppresses a send", async () => {
+    vi.useFakeTimers();
+    const { broker, transport, focus } = makeBroker({ turns: [turn(42)] });
+    const pending = holdInitialSend(transport);
+    try {
+      focus.openDialog(selector(focus).component);
+      await settle();
+      pending.resolve({ message_id: 0 });
+      await settle();
+      await vi.advanceTimersByTimeAsync(REFRESH_MS);
+      expect(pending.send).toHaveBeenCalledTimes(2);
+      expect(broker.current()?.telegram?.messageId).toBe(102);
+      expect(transport.removed).not.toContain(0);
+    } finally { broker.stop(); vi.useRealTimers(); }
+  });
+
+  it("releases the pending-send guard even when the transport throws synchronously", async () => {
+    vi.useFakeTimers();
+    const { broker, transport, focus } = makeBroker({ turns: [turn(42)] });
+    const send = vi.spyOn(transport, "sendButtons").mockImplementationOnce(() => { throw new Error("synthetic immediate failure"); });
+    try {
+      focus.openDialog(selector(focus).component);
+      await settle();
+      await vi.advanceTimersByTimeAsync(REFRESH_MS);
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(broker.current()?.telegram?.messageId).toBe(101);
+    } finally { broker.stop(); vi.useRealTimers(); }
+  });
+
+  it("coalesces pending refreshes into the newest frame on the original message", async () => {
+    vi.useFakeTimers();
+    const { broker, transport, focus } = makeBroker({ turns: [turn(42)] });
+    const pending = holdInitialSend(transport);
+    try {
+      const { component } = selector(focus);
+      focus.openDialog(component);
+      await settle();
+      component.options = ["intermediate-row"];
+      await vi.advanceTimersByTimeAsync(REFRESH_MS);
+      component.options = ["latest-row"];
+      await vi.advanceTimersByTimeAsync(REFRESH_MS);
+      expect(pending.send).toHaveBeenCalledTimes(1);
+      expect(transport.edits).toEqual([]);
+
+      pending.resolve({ message_id: 901 });
+      await settle();
+      expect(pending.send).toHaveBeenCalledTimes(1);
+      expect(transport.edits).toHaveLength(1);
+      expect(transport.edits[0]?.messageId).toBe(901);
+      expect(JSON.stringify(transport.edits[0]?.rows)).toContain("latest-row");
+      expect(JSON.stringify(transport.edits)).not.toContain("intermediate-row");
+    } finally { pending.resolve({ message_id: 901 }); await settle(); broker.stop(); vi.useRealTimers(); }
+  });
+
+  it.each(["closed", "replaced", "stopped", "ssh-only"] as const)(
+    "does not revive a %s dialog when its first send returns late", async (ending) => {
+      vi.useFakeTimers();
+      let allowed = true;
+      const scope = { id: "mock-scope", origin: { chatId: 42, sourceMessageId: 7 }, ended: false } as unknown as CommandScope;
+      const { broker, transport, focus } = makeBroker({ scope, allowDialog: () => allowed });
+      const pending = holdInitialSend(transport);
+      try {
+        const { component } = selector(focus);
+        focus.openDialog(component);
+        await settle();
+        const first = broker.current()!;
+        if (ending === "closed") focus.closeToEditor();
+        if (ending === "replaced") focus.openDialog(selector(focus).component);
+        if (ending === "stopped") broker.stop();
+        if (ending === "ssh-only") { allowed = false; focus.openDialog(component); }
+        await settle();
+        const current = broker.current();
+        const currentPlacement = current?.telegram;
+        if (ending === "replaced") {
+          expect(first.closedBy).toBe("replaced");
+          expect(current).not.toBe(first);
+          expect(currentPlacement?.messageId).toBe(102);
+        }
+
+        pending.resolve({ message_id: 901 });
+        await settle();
+        expect(broker.current()).toBe(current);
+        expect(transport.removed).toContain(901);
+        expect(transport.edits.filter((frame) => frame.messageId === 901).every((frame) => frame.rows.length === 0)).toBe(true);
+        if (ending === "replaced" || ending === "ssh-only") expect(current?.telegram).toBe(currentPlacement);
+        else expect(current).toBeUndefined();
+      } finally { pending.resolve({ message_id: 901 }); await settle(); broker.stop(); vi.useRealTimers(); }
+    },
+  );
+
+  it("releases the pending-send guard after a rejected request", async () => {
+    vi.useFakeTimers();
+    const { broker, transport, focus } = makeBroker({ turns: [turn(42)] });
+    const pending = holdInitialSend(transport);
+    try {
+      focus.openDialog(selector(focus).component);
+      await settle();
+      pending.reject(new Error("synthetic send failure"));
+      await settle();
+      await vi.advanceTimersByTimeAsync(REFRESH_MS);
+      expect(pending.send).toHaveBeenCalledTimes(2);
+      expect(broker.current()?.telegram?.messageId).toBe(102);
+    } finally { broker.stop(); vi.useRealTimers(); }
+  });
+
+  it("keeps a refused text submission open and leaves a later terminal close correctly attributed", async () => {
+    const { broker, transport, written, focus } = makeBroker({ turns: [turn(42)],
+      entry: { kind: "input", title: "Mock validation", source: "pi" } });
+    try {
+      focus.openDialog({ getValue: () => "", handleInput: () => undefined });
+      await settle();
+      const session = broker.current()!;
+      session.adapter = { ...session.adapter!, act: () => false };
+      expect(broker.handleText(session, "synthetic-rejected-answer").toast).toContain("did not accept");
+      expect(session.state).toBe("open");
+      expect(session.lastAction).toBeUndefined();
+      expect(written).toEqual([]);
+      focus.closeToEditor();
+      await settle();
+      expect(session.closedBy).toBe("terminal");
+      expect(transport.edits.at(-1)?.text).toBe("Answered in the terminal");
+    } finally { broker.stop(); }
+  });
+
+  it("does not treat a search as an answer or relabel a later terminal close", async () => {
+    vi.useFakeTimers();
+    const { broker, transport, focus } = makeBroker({ turns: [turn(42)] });
+    try {
+      focus.openDialog(selector(focus).component);
+      await settle();
+      const session = broker.current()!;
+      const model: DialogModel = { kind: "select", title: "Mock search", items: [], total: 0, search: { query: "" } };
+      session.model = model;
+      session.adapter = { id: "mock-search", detect: () => true, read: () => model,
+        act: (_component, action) => {
+          if (action.type !== "search") return false;
+          model.search!.query = action.query;
+          return true;
+        } };
+      expect(broker.handleText(session, "synthetic-query")).toEqual({ handled: true });
+      expect(model.search?.query).toBe("synthetic-query");
+      expect(session.state).toBe("open");
+      expect(session.lastAction).toBeUndefined();
+      focus.closeToEditor();
+      await vi.advanceTimersByTimeAsync(REFRESH_MS);
+      expect(session.closedBy).toBe("terminal");
+      expect(transport.edits.at(-1)?.text).toBe("Answered in the terminal");
+    } finally { broker.stop(); vi.useRealTimers(); }
+  });
+
+  it("does not submit text after the host has already won the race", async () => {
+    const entry: EntryInfo = { kind: "input", title: "Mock completed race", source: "pi",
+      race: { settled: true, answer: vi.fn(() => false) } };
+    const { broker, transport, written, focus } = makeBroker({ turns: [turn(42)], entry });
+    const input = vi.fn();
+    try {
+      focus.openDialog({ getValue: () => "", handleInput: input });
+      await settle();
+      const session = broker.current()!;
+      expect(broker.handleText(session, "synthetic-too-late").toast).toContain("already been answered");
+      expect(input).not.toHaveBeenCalled();
+      expect(entry.race!.answer).not.toHaveBeenCalled();
+      expect(written).toEqual([]);
+      focus.closeToEditor();
+      await settle();
+      expect(session.closedBy).toBe("terminal");
+      expect(transport.edits.at(-1)?.text).toBe("Answered in the terminal");
+    } finally { broker.stop(); }
+  });
+
+  it("keeps an asynchronous raced button answer attributed to Telegram", async () => {
+    vi.useFakeTimers();
+    const entry: EntryInfo = { kind: "input", title: "Mock cancellation", source: "pi" };
+    const { broker, transport, focus } = makeBroker({ turns: [turn(42)], entry });
+    let answered = false;
+    entry.race = {
+      get settled() { return answered; },
+      answer() {
+        if (answered) return false;
+        answered = true;
+        setTimeout(() => focus.closeToEditor(), 20);
+        return true;
+      },
+    };
+    try {
+      focus.openDialog({ getValue: () => "", handleInput: () => undefined });
+      await settle();
+      const session = broker.current()!;
+      expect(broker.handleCallback(42, undefined, { sessionId: session.id, generation: session.generation, op: "x" })).toEqual({ handled: true });
+      await vi.advanceTimersByTimeAsync(20);
+      expect(session.closedBy).toBe("telegram");
+      expect(transport.edits.at(-1)?.text).toBe("✅ Cancel");
+    } finally { broker.stop(); vi.useRealTimers(); }
+  });
+
+  it("hides a submitted secret in the completion summary", async () => {
+    const { broker, transport, focus } = makeBroker({ turns: [turn(42)], secrets: new SecretStore(),
+      entry: { kind: "input", title: "Synthetic secret field", secret: true, source: "pi" } });
+    try {
+      focus.openDialog({ getValue: () => "", handleInput: (input: string) => { if (input === "\r") focus.closeToEditor(); } });
+      await settle();
+      const session = broker.current()!;
+      expect(broker.handleText(session, "synthetic-private-value", 808)).toEqual({ handled: true });
+      await settle();
+      expect(session.closedBy).toBe("telegram");
+      expect(transport.edits.at(-1)?.text).toBe("✅ Submitted (hidden)");
+      expect(transport.deleted).toContain(808);
+      expect(JSON.stringify([...transport.sent, ...transport.edits])).not.toContain("synthetic-private-value");
+    } finally { broker.stop(); }
   });
 });
 

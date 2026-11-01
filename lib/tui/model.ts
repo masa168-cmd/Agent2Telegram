@@ -188,5 +188,7 @@ export type DialogSession = {
   published?: string;
   state: "open" | "resolving" | "closed";
   closedBy?: "telegram" | "terminal" | "replaced";
+  /** A typed field can submit before its host emits the focus-close event. */
+  telegramSubmitted?: boolean;
   lastAction?: string;
 };

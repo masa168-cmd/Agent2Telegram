@@ -122,7 +122,7 @@ describe("createTelegramController media message behavior", () => {
 
     await controller.handleMessage({
       message_id: 1,
-      chat: { id: 999 },
+      chat: { id: 999, type: "private" },
       document: {
         file_id: "abc",
         file_name: "photo.png",
@@ -183,7 +183,7 @@ describe("createTelegramController media message behavior", () => {
 
     await controller.handleMessage({
       message_id: 1,
-      chat: { id: 999 },
+      chat: { id: 999, type: "private" },
       caption: "Analyze this image",
       photo: [
         { file_id: "photo-id-1", file_size: 100 },
@@ -192,7 +192,8 @@ describe("createTelegramController media message behavior", () => {
 
     expect(prompts).toHaveLength(1);
     expect(prompts[0]).toContain("Analyze this image");
-    expect(prompts[0]).toContain("photo (1 photo frame(s))");
+    expect(prompts[0]).toContain("- photo");
+    expect(prompts[0]).not.toContain("photo frame");
   });
 
   it("includes replied-to Telegram message text in the agent prompt", async () => {
@@ -242,7 +243,7 @@ describe("createTelegramController media message behavior", () => {
 
     await controller.handleMessage({
       message_id: 2,
-      chat: { id: 999 },
+      chat: { id: 999, type: "private" },
       from: { id: 100, username: "alice" },
       text: "What do you think?",
       reply_to_message: {
@@ -307,7 +308,7 @@ describe("createTelegramController media message behavior", () => {
 
     await controller.handleMessage({
       message_id: 2,
-      chat: { id: 999 },
+      chat: { id: 999, type: "private" },
       text: "Explain the selected quote",
       quote: { text: "Selected quoted Telegram text", position: 5, is_manual: true },
     });
@@ -367,7 +368,7 @@ describe("createTelegramController media message behavior", () => {
 
     await controller.handleMessage({
       message_id: 2,
-      chat: { id: 999 },
+      chat: { id: 999, type: "private" },
       text: "Can you see what I replied to?",
       reply_to_message: { message_id: 1 },
     });
@@ -431,7 +432,7 @@ describe("createTelegramController media message behavior", () => {
 
     await controller.handleMessage({
       message_id: 2,
-      chat: { id: 999 },
+      chat: { id: 999, type: "private" },
       text: "Describe the quoted image",
       reply_to_message: {
         message_id: 1,
@@ -444,7 +445,8 @@ describe("createTelegramController media message behavior", () => {
     expect(prompts[0]).toContain("[telegram quoted message]");
     expect(prompts[0]).toContain("caption:\nQuoted image caption");
     expect(prompts[0]).toContain("[telegram quoted attachment]");
-    expect(prompts[0]).toContain("photo (1 photo frame(s))");
+    expect(prompts[0]).toContain("- photo");
+    expect(prompts[0]).not.toContain("photo frame");
     expect(saved).toEqual([]);
   });
 
@@ -500,6 +502,7 @@ describe("createTelegramController media message behavior", () => {
       getActiveTurn: () => undefined,
       saveIncomingTelegramAttachment: async (fileId, fileName, kind) => {
         saved.push({ fileId, fileName, kind });
+        if (fileId === "bad-doc") throw new Error("disk full");
         return `/tmp/saved/${fileId}.jpg`;
       },
       beginTelegramTurn: (chatId: number, replaceMessageId?: number) => ({ chatId, queuedAttachments: [], replaceMessageId }),
@@ -508,7 +511,7 @@ describe("createTelegramController media message behavior", () => {
 
     await controller.handleMessage({
       message_id: 1,
-      chat: { id: 999 },
+      chat: { id: 999, type: "private" },
       photo: [
         { file_id: "photo-small", file_size: 100 },
         { file_id: "photo-large", file_size: 400 },
@@ -516,13 +519,25 @@ describe("createTelegramController media message behavior", () => {
     });
 
     expect(prompts).toHaveLength(1);
-    expect(prompts[0]).toContain("photo (2 photo frame(s))");
-    expect(prompts[0]).toContain("photo-large");
-    expect(prompts[0]).toContain("/tmp/saved/photo-large.jpg");
+    // The model gets one line per attachment: the local path only, no frame count or file ID.
+    expect(prompts[0]).toContain("[telegram attachment]\n- photo: /tmp/saved/photo-large.jpg");
+    expect(prompts[0]).not.toContain("photo frame");
+    expect(prompts[0]).not.toContain("photo-large =>");
     expect(saved).toEqual([{ fileId: "photo-large", kind: "photo", fileName: undefined }]);
+    // A successful save sends no receipt to Telegram.
+    expect(transportSendText).not.toHaveBeenCalled();
+
+    await controller.handleMessage({
+      message_id: 2,
+      chat: { id: 999, type: "private" },
+      document: { file_id: "bad-doc", file_name: "报告.pdf" },
+    });
+    await vi.waitFor(() => expect(prompts).toHaveLength(2));
+    expect(prompts[1]).toContain("- document: 报告.pdf: 保存失败（disk full）");
+    expect(prompts[1]).not.toContain("bad-doc");
+    // A failed save is still reported in Telegram.
     expect(transportSendText).toHaveBeenCalledTimes(1);
-    expect(sent[0]).toContain("✅ Saved attachments (local paths):");
-    expect(sent[0]).toContain("/tmp/saved/photo-large.jpg");
+    expect(sent[0]).toBe("⚠️ 附件未保存：\n- document: 报告.pdf: 保存失败（disk full）");
   });
 
   it("does not block message handling while waiting for prompt completion", async () => {
@@ -578,7 +593,7 @@ describe("createTelegramController media message behavior", () => {
     const result = await Promise.race([
       controller.handleMessage({
         message_id: 1,
-        chat: { id: 999 },
+        chat: { id: 999, type: "private" },
         text: "Continue the analysis",
       }),
       new Promise<"timeout">((resolve) => {
@@ -641,7 +656,7 @@ describe("createTelegramController media message behavior", () => {
       endTelegramTurn: () => undefined,
     });
 
-    await controller.handleMessage({ message_id: 1, chat: { id: 999 }, text: "Use my new instructions" });
+    await controller.handleMessage({ message_id: 1, chat: { id: 999, type: "private" }, text: "Use my new instructions" });
     await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
 
     expect(prompt).toHaveBeenCalledWith("Use my new instructions", {
@@ -709,7 +724,7 @@ describe("createTelegramController media message behavior", () => {
       endTelegramTurn: () => undefined,
     });
 
-    await controller.handleMessage({ message_id: 1, chat: { id: 999 }, text: "Pause and inspect this" });
+    await controller.handleMessage({ message_id: 1, chat: { id: 999, type: "private" }, text: "Pause and inspect this" });
     await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
 
     expect(prompt.mock.calls[0]?.[1]).toMatchObject({ streamingBehavior: "steer" });
@@ -758,7 +773,7 @@ describe("createTelegramController media message behavior", () => {
       endTelegramTurn: () => undefined,
     });
 
-    await controller.handleMessage({ message_id: 1, chat: { id: 999 }, text: "Do not lose this" });
+    await controller.handleMessage({ message_id: 1, chat: { id: 999, type: "private" }, text: "Do not lose this" });
     await vi.waitFor(() => expect(sendText).toHaveBeenCalledWith(
       999,
       "⚠️ Your message could not be delivered to π. Please retry.",
@@ -829,19 +844,19 @@ describe("createTelegramController media message behavior", () => {
 
     await controller.handleMessage({
       message_id: 1,
-      chat: { id: 999 },
+      chat: { id: 999, type: "private" },
       text: "A",
     });
     await controller.handleMessage({
       message_id: 2,
-      chat: { id: 999 },
+      chat: { id: 999, type: "private" },
       text: "B",
     });
 
     const result = await Promise.race([
       controller.handleMessage({
         message_id: 3,
-        chat: { id: 999 },
+        chat: { id: 999, type: "private" },
         text: "/stop",
       }),
       new Promise<"timeout">((resolve) => {
@@ -919,7 +934,7 @@ describe("createTelegramController media message behavior", () => {
     const result = await Promise.race([
       controller.handleMessage({
         message_id: 1,
-        chat: { id: 999 },
+        chat: { id: 999, type: "private" },
         text: "/new",
       }),
       new Promise<"timeout">((resolve) => {
@@ -997,14 +1012,14 @@ describe("createTelegramController media message behavior", () => {
 
     await controller.handleMessage({
       message_id: 1,
-      chat: { id: 999 },
+      chat: { id: 999, type: "private" },
       text: "/status",
     });
 
     const timeoutRace = await Promise.race([
       controller.handleMessage({
         message_id: 2,
-        chat: { id: 999 },
+        chat: { id: 999, type: "private" },
         text: "/cwd",
       }),
       new Promise<"timeout">((resolve) => {
@@ -1071,7 +1086,7 @@ describe("createTelegramController media message behavior", () => {
 
     await expect(controller.handleMessage({
       message_id: 1,
-      chat: { id: 999 },
+      chat: { id: 999, type: "private" },
       text: "/pair",
     })).resolves.toBeUndefined();
 
@@ -1138,7 +1153,7 @@ describe("createTelegramController media message behavior", () => {
 
     await controller.handleMessage({
       message_id: 1,
-      chat: { id: 999 },
+      chat: { id: 999, type: "private" },
       text: "/cd",
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -1203,7 +1218,7 @@ describe("createTelegramController media message behavior", () => {
     const handled = await Promise.race([
       controller.handleMessage({
         message_id: 1,
-        chat: { id: 321 },
+        chat: { id: 321, type: "private" },
         text: "/pair",
       }),
       new Promise<"timeout">((resolve) => {
@@ -1214,7 +1229,7 @@ describe("createTelegramController media message behavior", () => {
 
     await controller.handleCallbackQuery({
       id: "cb-1",
-      message: { chat: { id: 321 }, message_id: sentMessageId },
+      message: { chat: { id: 321, type: "private" }, message_id: sentMessageId },
       data: encodeUiCallback("f:1:yes"),
     });
 
@@ -1277,7 +1292,7 @@ describe("createTelegramController media message behavior", () => {
       endTelegramTurn: () => undefined,
     });
 
-    await controller.handleMessage({ message_id: 1, chat: { id: 555 }, text: "/status" });
+    await controller.handleMessage({ message_id: 1, chat: { id: 555, type: "private" }, text: "/status" });
     await new Promise((r) => setTimeout(r, 10));
     expect(handlerRan).toBe(true);
 
@@ -1333,7 +1348,7 @@ describe("createTelegramController media message behavior", () => {
       beginTelegramTurn: () => ({ chatId: 1, queuedAttachments: [], replaceMessageId: undefined }),
       endTelegramTurn: () => undefined,
     });
-    await controller.handleMessage({ message_id: 1, chat: { id: 1 }, text: "/status" });
+    await controller.handleMessage({ message_id: 1, chat: { id: 1, type: "private" }, text: "/status" });
     await new Promise((r) => setTimeout(r, 20));
     expect(handlerRan).toBe(true);
     // Agent was not idle at command start → swap restored immediately after handler.
@@ -1381,7 +1396,7 @@ describe("createTelegramController — callback keyboard cleanup ownership", () 
     const { controller, transport } = makeController(() => ({ handled: true, promptMessageId: 55 }));
     await controller.handleCallbackQuery({
       id: "cb",
-      message: { chat: { id: 1 }, message_id: 55 },
+      message: { chat: { id: 1, type: "private" }, message_id: 55 },
       data: encodeUiCallback("f:1:t:1"),
     } as any);
     expect(transport.answerCallbackQuery).toHaveBeenCalledTimes(1);
@@ -1394,7 +1409,7 @@ describe("createTelegramController — callback keyboard cleanup ownership", () 
     const { controller, transport } = makeController(() => ({ handled: false }));
     await controller.handleCallbackQuery({
       id: "cb",
-      message: { chat: { id: 1 }, message_id: 55 },
+      message: { chat: { id: 1, type: "private" }, message_id: 55 },
       data: encodeUiCallback("f:1:o:0"),
     } as any);
     expect(transport.sendText).toHaveBeenCalledWith(1, "This prompt is no longer active.", undefined, 55);

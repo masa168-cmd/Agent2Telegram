@@ -41,6 +41,8 @@ export function decodeDialogCallback(data: string): DialogCallback | undefined {
 }
 export const MENU_MORE_CALLBACK_PREFIX = "tgplus:more:";
 export const MENU_RUN_CALLBACK_PREFIX = "tgplus:run:";
+/** Prefix of the removed "📋 命令" list pages; kept only so stale buttons get an "expired" answer. */
+export const MENU_ALL_CALLBACK_PREFIX = "tgplus:cmds:";
 
 export function encodeUiCallback(value: string): string {
   return `${UI_CALLBACK_PREFIX}${value}`;

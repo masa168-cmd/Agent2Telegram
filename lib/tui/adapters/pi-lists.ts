@@ -10,7 +10,7 @@
  */
 import { stripAnsi } from "../../ansi.ts";
 import type { DialogAdapter, DialogItem, DialogModel } from "../model.ts";
-import { constructorName, resolveRowKey, rowKey, selectRow } from "./utils.ts";
+import { constructorName, moveCursor, resolveRowKey, rowKey, selectRow } from "./utils.ts";
 
 type HostRecord = Record<string, unknown>;
 
@@ -24,14 +24,27 @@ const MESSAGE_LABEL_MAX = 60;
 /** One known pi selector: how to reach its rows and how to present them. */
 type PiListSpec = {
   items(component: HostRecord): unknown[];
-  label(item: HostRecord): string;
+  label(item: HostRecord, component?: HostRecord): string;
   /** The row the host itself marks as its current value. */
   current?(component: HostRecord, item: HostRecord): boolean;
   /** Multi-select checkbox state. */
   checked?(item: HostRecord): boolean;
   title(component: HostRecord): string;
   multi?: boolean;
+  /** Terminal cursor when it lives on an inner list rather than the component. */
+  cursor?(component: HostRecord): number;
+  /** The host saves the focused row as its default on ctrl+s (`/model`, `/thinking`). */
+  saveDefault?: boolean;
 };
+
+/** Footer toggle key for "tap saves as default"; short to fit the 64-byte callback. */
+const SAVE_DEFAULT_KEY = "dflt";
+const DEFAULT_MARK = " (默认)";
+/** Per open dialog: whether a tap on a row saves it as the default (off when the dialog opens). */
+const saveDefaultMode = new WeakMap<object, boolean>();
+
+/** `/thinking` keeps its rows on an inner pi-tui `SelectList`. */
+const thinkingList = (c: HostRecord): HostRecord => asRecord(c.selectList);
 
 const messageLabel = (item: HostRecord): string => {
   const oneLine = text(item.text).replace(/\n/g, " ").trim();
@@ -39,10 +52,15 @@ const messageLabel = (item: HostRecord): string => {
 };
 
 const PI_LIST_SPECS: Record<string, PiListSpec> = {
-  // `/model`: `filteredModels` rows are `{ provider, id, model }`.
+  // `/model`: `filteredModels` rows are `{ provider, id, model }`. ctrl+s saves the
+  // focused row as the default model; `defaultModel` marks the saved one.
   ModelSelectorComponent: {
     items: (c) => (Array.isArray(c.filteredModels) ? (c.filteredModels as unknown[]) : []),
-    label: (item) => `${text(item.provider)}/${text(item.id)}`,
+    label: (item, c) => {
+      const saved = asRecord(c?.defaultModel);
+      const isDefault = saved.provider !== undefined && saved.provider === item.provider && saved.id === item.id;
+      return `${text(item.provider)}/${text(item.id)}${isDefault ? DEFAULT_MARK : ""}`;
+    },
     current: (c, item) => {
       const current = asRecord(c.currentModel);
       return current.provider !== undefined
@@ -50,6 +68,20 @@ const PI_LIST_SPECS: Record<string, PiListSpec> = {
         && current.id === item.id;
     },
     title: () => "Select model",
+    saveDefault: true,
+  },
+  // `/thinking`: rows `{ value, label: "✓ high" | "  high", description }` on the inner
+  // SelectList; the description ends in "· default" for the saved level. ctrl+s saves.
+  ThinkingSelectorComponent: {
+    items: (c) => {
+      const list = thinkingList(c);
+      return Array.isArray(list.filteredItems) ? (list.filteredItems as unknown[]) : [];
+    },
+    label: (item) => `${text(item.value)}${text(item.description).endsWith("· default") ? DEFAULT_MARK : ""}`,
+    current: (_c, item) => text(item.label).startsWith("✓"),
+    cursor: (c) => readNumber(thinkingList(c).selectedIndex),
+    title: () => "Thinking level",
+    saveDefault: true,
   },
   // `/scoped-models`: Enter toggles the row, ctrl+s persists, so it is a
   // multi-select on Telegram; `enabled` is the checkbox.
@@ -93,7 +125,8 @@ function rowsOf(component: object, spec: PiListSpec): { raw: HostRecord[]; label
   const items = spec.items(record);
   if (!Array.isArray(items)) return undefined;
   const raw = items.map(asRecord);
-  return { raw, labels: raw.map((item) => spec.label(item)), cursor: readNumber(record.selectedIndex) };
+  const cursor = spec.cursor ? spec.cursor(record) : readNumber(record.selectedIndex);
+  return { raw, labels: raw.map((item) => spec.label(item, record)), cursor };
 }
 
 export const piListAdapter: DialogAdapter = {
@@ -118,12 +151,17 @@ export const piListAdapter: DialogAdapter = {
       ...(spec.current ? { current: spec.current(component as HostRecord, item) } : {}),
       ...(spec.multi && spec.checked ? { checked: spec.checked(item) } : {}),
     }));
+    // The title stays fixed so toggling the mode keeps the current page; the button says the state.
+    const saving = saveDefaultMode.get(component) === true;
     return {
       kind: "select",
       title: spec.title(component as HostRecord),
       items,
       total: items.length,
       ...(spec.multi ? { multi: true } : {}),
+      ...(spec.saveDefault
+        ? { extraActions: [{ label: saving ? "⭐ 设为默认：开（点选即保存）" : "⭐ 设为默认：关", key: SAVE_DEFAULT_KEY }] }
+        : {}),
     };
   },
 
@@ -131,6 +169,13 @@ export const piListAdapter: DialogAdapter = {
     const spec = specFor(component);
     if (!spec) return false;
     if (action.type === "cancel") return ctx.sendKey("esc");
+
+    if (action.type === "key") {
+      // Only the advertised footer toggle; it changes no host state, just how the next tap acts.
+      if (!spec.saveDefault || action.name !== SAVE_DEFAULT_KEY) return false;
+      saveDefaultMode.set(component, saveDefaultMode.get(component) !== true);
+      return true;
+    }
 
     const multi = spec.multi === true;
     if (action.type === "submit") {
@@ -150,6 +195,11 @@ export const piListAdapter: DialogAdapter = {
     if (!rows) return false;
     const target = resolveRowKey(rows.labels, action.key);
     if (target === undefined) return false;
+    // Save mode: move to the row without Enter, then ctrl+s, the host's own "set as default"
+    // (`app.models.save` / `app.thinking.save`), which also applies it to this session.
+    if (spec.saveDefault && saveDefaultMode.get(component) === true) {
+      return moveCursor(ctx.sendKey, rows.cursor, target) && ctx.sendKey("ctrl-s");
+    }
     return selectRow(ctx.sendKey, rows.cursor, target);
   },
 };

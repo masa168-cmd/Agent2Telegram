@@ -28,7 +28,7 @@ const TELEGRAM_MENU_COMMANDS: Array<{ command: string; description: string }> = 
   { command: "reload", description: "Reload pi resources" },
   { command: "hotkeys", description: "Show keyboard shortcuts" },
   { command: "changelog", description: "Show changelog" },
-  { command: "quit", description: "Shut down pi" },
+  { command: "restart", description: "Restart pi with this session (tmux only)" },
 
   // Additional pi-telegram-plus commands.
   { command: "cwd", description: "Show current working directory" },
@@ -55,8 +55,52 @@ const CORE_COMMAND_PRIORITY = [
 // telegramCommands, or the /tg hub), valid on every host regardless of the
 // captured catalog.
 const TELEGRAM_SERVED_COMMANDS = new Set([
-  "tg", "cwd", "cd", "status", "stop",
+  "tg", "cwd", "cd", "status", "stop", "restart",
 ]);
+
+/** Never offered from Telegram: quitting is a terminal action; use /restart instead. */
+export const TELEGRAM_BLOCKED_COMMANDS = new Set(["quit", "exit"]);
+
+/** Commands kept out of the BotMenu: SSH-only ones (still answered with the SSH notice) and
+ *  terminal-bound ones such as scoped-models, which only affects the Ctrl+P cycle. */
+const TELEGRAM_MENU_HIDDEN = new Set(["tg_forum", "login", "logout", "tg_setup", "scoped_models"]);
+
+/**
+ * Chinese BotMenu wording for the plugin's own and Pi 1.4.0's built-in commands.
+ * It wins over the host's English description; commands of other extensions
+ * keep their own description.
+ */
+const ZH_DESCRIPTIONS: Record<string, string> = {
+  login: "配置模型服务商登录",
+  logout: "删除已保存的登录凭据",
+  model: "查看或切换当前模型",
+  settings: "打开设置菜单",
+  thinking: "设置思考档位",
+  resume: "恢复另一个会话",
+  new: "新建会话",
+  name: "设置或查看会话名称",
+  session: "查看会话信息和统计",
+  tree: "浏览会话树（切换分支）",
+  trust: "保存项目信任设置",
+  fork: "从之前的消息分叉出新会话",
+  clone: "在当前位置复制会话",
+  compact: "手动压缩会话上下文",
+  copy: "复制最后一条回复",
+  export: "导出会话",
+  import: "从 JSONL 文件导入并恢复会话",
+  share: "分享会话（会上传内容）",
+  bug: "向 Pi 开发者报告问题",
+  reload: "重新加载扩展、技能、提示词和主题",
+  hotkeys: "查看快捷键",
+  changelog: "查看更新日志",
+  restart: "重启 Pi 并恢复当前会话（需 tmux）",
+  cwd: "查看当前工作目录",
+  cd: "切换 Pi 工作目录",
+  stop: "停止当前任务",
+  status: "查看运行状态（目录、模型、上下文、消息）",
+  tg: "打开 Telegram 管理菜单",
+  more: "更多命令",
+};
 
 const toTelegramCommandName = (name: string): string | undefined => {
   // Telegram bot menu commands allow only [A-Za-z0-9_] and max 32 chars.
@@ -86,8 +130,9 @@ export function buildTelegramMenuCommandsFull(
   const commands = new Map<string, string>();
   const addCommand = (name: string, description?: string) => {
     const telegramName = toTelegramCommandName(name);
-    if (!telegramName || commands.has(telegramName)) return;
-    commands.set(telegramName, (description?.trim() || `Run /${telegramName}`).slice(0, 256));
+    if (!telegramName || commands.has(telegramName) || TELEGRAM_BLOCKED_COMMANDS.has(telegramName)
+      || TELEGRAM_MENU_HIDDEN.has(telegramName)) return;
+    commands.set(telegramName, (ZH_DESCRIPTIONS[telegramName] ?? (description?.trim() || `运行 /${telegramName}`)).slice(0, 256));
   };
 
   // When the TUI bridge has captured the host catalog, a static entry the host
@@ -174,7 +219,7 @@ export function buildTelegramMenuCommandsFull(
   const overflow = all.slice(99);
   // A host that defines its own /more already occupies a kept slot; do not
   // send setMyCommands a duplicate command name.
-  if (!kept.some((entry) => entry.command === "more")) kept.push({ command: "more", description: "Show more commands" });
+  if (!kept.some((entry) => entry.command === "more")) kept.push({ command: "more", description: ZH_DESCRIPTIONS.more! });
   return { commands: kept, overflow };
 }
 
@@ -193,6 +238,31 @@ function syncKey(botToken: string, apiBase?: string): string {
 }
 
 const menuOverflowByBot = new Map<string, Array<{ command: string; description: string }>>();
+const menuAllByBot = new Map<string, Array<{ command: string; description: string }>>();
+
+/** Text of the former single input-area button; still recognised so a stale keyboard never prompts the model. */
+export const COMMAND_MENU_BUTTON = "📋 命令";
+
+/** Buttons per row and the button cap of the input-area command keyboard. */
+const KEYBOARD_ROW_SIZE = 3;
+const KEYBOARD_MAX_BUTTONS = 99;
+
+/**
+ * Persistent reply-keyboard rows for the phone input area: every synced menu command as `/name`,
+ * in menu order. Tapping one sends that command as a normal message. Empty until the first sync.
+ */
+export function getTelegramCommandKeyboard(botToken: string | undefined, apiBase?: string): string[][] {
+  const names = getTelegramMenuAll(botToken, apiBase).slice(0, KEYBOARD_MAX_BUTTONS).map(entry => `/${entry.command}`);
+  const rows: string[][] = [];
+  for (let i = 0; i < names.length; i += KEYBOARD_ROW_SIZE) rows.push(names.slice(i, i + KEYBOARD_ROW_SIZE));
+  return rows;
+}
+
+/** Every command of the last menu sync (BotMenu entries without /more, then the overflow). */
+export function getTelegramMenuAll(botToken: string | undefined, apiBase?: string): Array<{ command: string; description: string }> {
+  if (!botToken) return [];
+  return menuAllByBot.get(syncKey(botToken, apiBase)) ?? [];
+}
 
 /** Overflow commands from the last menu sync for this bot, newest menu first. */
 export function getTelegramMenuOverflow(botToken: string | undefined, apiBase?: string): Array<{ command: string; description: string }> {
@@ -208,6 +278,8 @@ async function doSyncTelegramCommands(botToken: string, pi: ExtensionAPI, apiBas
   const { commands, overflow } = buildTelegramMenuCommandsFull(pi, { recent, tuiCommands });
   await setTelegramMyCommands(botToken, commands, apiBase);
   menuOverflowByBot.set(syncKey(botToken, apiBase), overflow);
+  const all = overflow.length > 0 ? commands.filter(entry => entry.command !== "more") : commands;
+  menuAllByBot.set(syncKey(botToken, apiBase), [...all, ...overflow]);
 }
 
 export async function syncTelegramCommands(botToken: string | undefined, pi: ExtensionAPI, apiBase?: string): Promise<void> {

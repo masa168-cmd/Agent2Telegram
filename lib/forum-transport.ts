@@ -15,19 +15,22 @@ export function createForumTelegramTransport(base: TelegramTransport, forum: Sco
       || (messageId !== undefined && !forum.ownsMessage(messageId))) throw new TelegramSendSuppressedError();
     return t;
   };
+  // Never quote the user's message: private chats need no quote, and forum topics are
+  // targeted by message_thread_id alone, so the quote only adds visual noise.
+  const quote = (_reply: number | undefined): undefined => undefined;
   const remember = (t: ForumTarget | undefined, id: number, buttons = false) => {
     if (t && sameForumTarget(t, forum.getTarget())) forum.rememberMessage(id, buttons);
   };
   return {
     sendText: async (chat, text, thread, reply, rich, delivery) => {
       const t = target(chat, thread);
-      const messages = await base.sendText(chat, text, t?.threadId ?? thread, reply, rich, delivery);
+      const messages = await base.sendText(chat, text, t?.threadId ?? thread, quote(reply), rich, delivery);
       for (const message of messages) remember(t, message.message_id);
       return messages;
     },
     sendButtons: async (chat, text, rows, thread, reply) => {
       const t = target(chat, thread);
-      const message = await base.sendButtons(chat, text, rows, t?.threadId ?? thread, reply);
+      const message = await base.sendButtons(chat, text, rows, t?.threadId ?? thread, quote(reply));
       remember(t, message.message_id, true);
       return message;
     },
@@ -54,11 +57,11 @@ export function createForumTelegramTransport(base: TelegramTransport, forum: Sco
     },
     sendDocument: async (chat, path, caption, signal, thread, reply) => {
       const t = target(chat, thread);
-      await base.sendDocument(chat, path, caption, signal, t?.threadId ?? thread, reply);
+      await base.sendDocument(chat, path, caption, signal, t?.threadId ?? thread, quote(reply));
     },
     sendPhoto: async (chat, data, caption, isPath, signal, thread, reply) => {
       const t = target(chat, thread);
-      await base.sendPhoto(chat, data, caption, isPath, signal, t?.threadId ?? thread, reply);
+      await base.sendPhoto(chat, data, caption, isPath, signal, t?.threadId ?? thread, quote(reply));
     },
     sendChatAction: async (chat, action, thread) => {
       const t = target(chat, thread);

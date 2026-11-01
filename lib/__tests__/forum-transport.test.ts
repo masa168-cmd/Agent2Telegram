@@ -72,4 +72,25 @@ describe("complete forum-scoped output pipeline", () => {
     expect(f.base.sendText).toHaveBeenCalledWith(42, "private", undefined, undefined, undefined, undefined);
     expect(f.base.editText).toHaveBeenCalledWith(42, 999, "legacy edit", undefined);
   });
+  it("never quotes the user's message in private or forum mode", async () => {
+    const f = fixture(); f.forum.enabled = false;
+    await f.transport.sendText(42, "private reply", undefined, 555);
+    await f.transport.sendButtons(42, "private buttons", [], undefined, 556);
+    await f.transport.sendDocument(42, "/tmp/x", "doc", undefined, undefined, 557);
+    await f.transport.sendPhoto(42, "data", "img", false, undefined, undefined, 558);
+    expect(f.base.sendText).toHaveBeenCalledWith(42, "private reply", undefined, undefined, undefined, undefined);
+    expect(f.base.sendButtons).toHaveBeenCalledWith(42, "private buttons", [], undefined, undefined);
+    expect(f.base.sendDocument).toHaveBeenCalledWith(42, "/tmp/x", "doc", undefined, undefined, undefined);
+    expect(f.base.sendPhoto).toHaveBeenCalledWith(42, "data", "img", false, undefined, undefined, undefined);
+
+    const g = fixture();
+    await g.transport.sendText(-100123, "forum reply", 11, 777);
+    await g.transport.sendButtons(-100123, "forum buttons", [], 11, 778);
+    await g.transport.sendDocument(-100123, "/tmp/x", "doc", undefined, 11, 779);
+    await g.transport.sendPhoto(-100123, "data", "img", false, undefined, 11, 780);
+    expect(g.base.sendText).toHaveBeenCalledWith(-100123, "forum reply", 11, undefined, undefined, undefined);
+    expect(g.base.sendButtons).toHaveBeenCalledWith(-100123, "forum buttons", [], 11, undefined);
+    expect(g.base.sendDocument).toHaveBeenCalledWith(-100123, "/tmp/x", "doc", undefined, 11, undefined);
+    expect(g.base.sendPhoto).toHaveBeenCalledWith(-100123, "data", "img", false, undefined, 11, undefined);
+  });
 });

@@ -133,10 +133,14 @@ const HOST: HostModule = await loadHost();
 
 type SessionCaptureState = {
   activeSession?: CapturedAgentSession;
+  /** The mode's own shutdown handler, saved before it is replaced; only /restart uses it. */
+  hostShutdown?: { session: CapturedAgentSession; run: () => void };
   installed: boolean;
 };
 
 const SESSION_CAPTURE_STATE = Symbol.for("pi-telegram-plus.session-capture-state");
+/** Marks the notify-only replacement so it is never mistaken for the host's exit. */
+const NOTIFY_ONLY = Symbol.for("pi-telegram-plus.notify-only-shutdown");
 
 function getState(): SessionCaptureState {
   const g = globalThis as typeof globalThis & Record<symbol, SessionCaptureState | undefined>;
@@ -190,6 +194,23 @@ export function isOmpHost(): boolean {
   return HOST.AgentRegistry !== undefined;
 }
 
+/** Whether the active session's original (exiting) shutdown handler was captured. */
+export function canRequestHostShutdown(): boolean {
+  const state = getState();
+  return !!state.hostShutdown && state.hostShutdown.session === getActiveSession();
+}
+
+/**
+ * Run the mode's original shutdown for the active session: Pi 1.4.0 InteractiveMode
+ * stops the TUI, disposes extensions, prints the resume command and exits. Only
+ * /restart calls this, after its own confirmation. Returns false when unavailable.
+ */
+export function requestHostShutdown(): boolean {
+  if (!canRequestHostShutdown()) return false;
+  getState().hostShutdown!.run();
+  return true;
+}
+
 export function installAgentSessionCapture(): boolean {
   const state = getState();
   if (state.installed) return true;
@@ -224,14 +245,22 @@ export function installAgentSessionCapture(): boolean {
 
     // ── Replace shutdown handler ───────────────────────────────────────
     // Original exits the TUI event loop — dangerous from a Telegram command.
-    // Replace with a safe notification.
-    (runner as unknown as { shutdownHandler: () => void }).shutdownHandler = () => {
+    // Replace with a safe notification. The original is kept for /restart only.
+    const original = (runner as unknown as { shutdownHandler?: unknown }).shutdownHandler;
+    // A runner reused across rebinds already carries our replacement; never save that as the exit.
+    if (typeof original === "function" && !(original as { [NOTIFY_ONLY]?: true })[NOTIFY_ONLY]) {
+      state.hostShutdown = { session: this, run: () => (original as () => void).call(runner) };
+    } else if (typeof original !== "function" && state.hostShutdown?.session === this) {
+      state.hostShutdown = undefined;
+    }
+    const notifyOnly = Object.assign(() => {
       const ui = runner.getUIContext();
       ui.notify(
         "⚠️ Shutdown requested. Use Ctrl+C in terminal to stop pi.",
         "info",
       );
-    };
+    }, { [NOTIFY_ONLY]: true as const });
+    (runner as unknown as { shutdownHandler: () => void }).shutdownHandler = notifyOnly;
 
     return result;
   };

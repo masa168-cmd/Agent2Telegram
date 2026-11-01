@@ -21,7 +21,7 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
   },
 }));
 
-const { getActiveSession, installAgentSessionCapture } = await import("../session-capture.ts");
+const { getActiveSession, installAgentSessionCapture, canRequestHostShutdown, requestHostShutdown } = await import("../session-capture.ts");
 
 /** The mock keeps upstream's constructor signature; these tests build bare sessions. */
 const FakeAgentSession = AgentSessionExport as unknown as new () => {
@@ -49,5 +49,28 @@ describe("session capture on upstream pi", () => {
       "⚠️ Shutdown requested. Use Ctrl+C in terminal to stop pi.",
       "info",
     );
+    expect(mocks.shutdownHandler).not.toHaveBeenCalled();
+  });
+
+  it("keeps the host's real exit for /restart, bound to the active session only", async () => {
+    mocks.shutdownHandler.mockClear();
+    const session = new FakeAgentSession();
+    await session.bindExtensions({});
+    expect(canRequestHostShutdown()).toBe(true);
+    expect(requestHostShutdown()).toBe(true);
+    expect(mocks.shutdownHandler).toHaveBeenCalledTimes(1);
+
+    // Rebinding the same runner must not save our notify-only replacement as the exit.
+    await session.bindExtensions({});
+    mocks.shutdownHandler.mockClear();
+    expect(requestHostShutdown()).toBe(true);
+    expect(mocks.shutdownHandler).toHaveBeenCalledTimes(1);
+
+    // A replacement session whose runner has no handler yields no exit at all.
+    const other = new FakeAgentSession();
+    (other.extensionRunner as { shutdownHandler?: unknown }).shutdownHandler = undefined;
+    await other.bindExtensions({});
+    expect(canRequestHostShutdown()).toBe(false);
+    expect(requestHostShutdown()).toBe(false);
   });
 });

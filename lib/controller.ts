@@ -1,5 +1,5 @@
 import type { ExtensionCommandContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { DIALOG_CALLBACK_PREFIX, decodeDialogCallback, decodeMoreCallback, decodeRunCallback, decodeUiCallback, encodeMoreCallback, encodeRunCallback } from "./callback-protocol.ts";
+import { DIALOG_CALLBACK_PREFIX, MENU_ALL_CALLBACK_PREFIX, decodeDialogCallback, decodeMoreCallback, decodeRunCallback, decodeUiCallback, encodeMoreCallback, encodeRunCallback } from "./callback-protocol.ts";
 import { parseLeadingCommand, normalizeLeadingCommand } from "./command-parser.ts";
 import type {
   CapturedAgentSession,
@@ -18,7 +18,7 @@ import type { TuiBridgeAdapter } from "./tui-bridge.ts";
 import { tuiBridge as defaultTuiBridge, hostOwnsPrompts } from "./tui-bridge.ts";
 import { escapeHtml } from "./html.ts";
 import { recordCommandUsage } from "./command-usage.ts";
-import { getTelegramMenuOverflow } from "./menu-commands.ts";
+import { getTelegramMenuOverflow, getTelegramCommandKeyboard, COMMAND_MENU_BUTTON, TELEGRAM_BLOCKED_COMMANDS } from "./menu-commands.ts";
 import { log } from "./logger.ts";
 import { commandErrorMessage, getRunnerMode, restoreRunnerUiContext, setRunnerUiContext, TELEGRAM_EXTENSION_MODE } from "./pi-compat.ts";
 import { isOmpHost } from "./session-capture.ts";
@@ -102,7 +102,7 @@ function extractTelegramMediaEntries(message: TelegramMessage): IncomingMediaSum
 function buildTelegramIncomingMediaSummary(message: TelegramMessage, title = "[telegram attachment]"): string {
   const parts: string[] = [];
   if (message.photo && message.photo.length > 0) {
-    parts.push(`- photo (${message.photo.length} photo frame(s))`);
+    parts.push("- photo");
   }
   const entries: Array<{ type: string; document?: TelegramDocument }> = [];
   if (message.document) entries.push({ type: "document", document: message.document });
@@ -184,9 +184,22 @@ function buildTelegramExternalReplyBlock(message: TelegramMessage): string {
   return lines.length > 1 ? lines.join("\n") : "";
 }
 
+// Bot notices that carry the input-area command keyboard. In groups the client auto-replies
+// to such a message when a keyboard button is tapped, so that reply is not a user quote.
+function isKeyboardNoticeReply(reply: TelegramMessage | undefined): boolean {
+  if (!reply?.from?.is_bot) return false;
+  const text = reply.text ?? "";
+  return /^— 会话 \S+ 已接入 —/.test(text) || text.startsWith("命令按钮已更新");
+}
+
 function buildTelegramReplyContextBlock(message: TelegramMessage): string {
+  // In forum topics Telegram sets reply_to_message to the topic-creation message
+  // (id === message_thread_id) on every plain message; that is not a user quote.
+  const reply = message.reply_to_message;
+  const implicitTopicReply = reply !== undefined && message.message_thread_id !== undefined
+    && reply.message_id === message.message_thread_id;
   return [
-    buildTelegramQuotedMessageBlock(message.reply_to_message),
+    buildTelegramQuotedMessageBlock(implicitTopicReply || isKeyboardNoticeReply(reply) ? undefined : reply),
     buildTelegramTextQuoteBlock(message),
     buildTelegramExternalReplyBlock(message),
   ].filter(Boolean).join("\n\n");
@@ -207,20 +220,19 @@ function logTelegramReplyContext(message: TelegramMessage): void {
   });
 }
 
-function formatSavedIncomingAttachmentLine(kind: string, fileId: string, fileName: string | undefined, path: string): string {
-  const savedName = fileName ? `${fileName} (${fileId})` : fileId;
-  return `- ${kind}: ${savedName} => ${path}`;
+// One line per attachment for the model: only the local path, plus the original
+// file name when the sanitized saved name may have lost it. No Telegram file IDs.
+function formatSavedIncomingAttachmentLine(kind: string, fileName: string | undefined, path: string): string {
+  return fileName ? `- ${kind}: ${fileName} => ${path}` : `- ${kind}: ${path}`;
 }
 
-function formatIncomingAttachmentErrorLine(kind: string, fileId: string, fileName: string | undefined, reason: string): string {
-  const target = fileName ? `${fileName} (${fileId})` : fileId;
-  return `- ${kind}: ${target} -> failed to save (${reason})`;
+function formatIncomingAttachmentErrorLine(kind: string, fileName: string | undefined, reason: string): string {
+  return `- ${kind}${fileName ? `: ${fileName}` : ""}: 保存失败（${reason}）`;
 }
 
-function formatIncomingAttachmentReceipt(state: "saved" | "failed", lines: string[]): string {
-  if (lines.length === 0) return "";
-  const title = state === "saved" ? "✅ Saved attachments (local paths):" : "⚠️ Attachments not saved:";
-  return `${title}\n${lines.join("\n")}`;
+/** Only failures are reported back to Telegram; a successful save needs no receipt. */
+function formatIncomingAttachmentFailureNotice(lines: string[]): string {
+  return lines.length === 0 ? "" : `⚠️ 附件未保存：\n${lines.join("\n")}`;
 }
 
 
@@ -655,12 +667,12 @@ const TUI_SCREEN_WIDTH = 100;
 // copy/hotkeys/quit/exit are terminal-only mappings (stage 4 revisits them).
 const NATIVE_HANDLER_COMMANDS: Record<string, true> = {
   new: true, reload: true, import: true,
-  copy: true, hotkeys: true, quit: true, exit: true,
+  copy: true, hotkeys: true,
 };
 
 /** Plugin-owned bot-management commands: reachable even when the host bridge is down (v6 decision 48). */
 const PLUGIN_LOCAL_COMMANDS: Record<string, true> = {
-  tg: true, stop: true, cwd: true, cd: true, status: true, pair: true, more: true,
+  tg: true, stop: true, cwd: true, cd: true, status: true, pair: true, more: true, restart: true,
 };
 
 // /more overflow keyboard: 30 command buttons per page, three per row.
@@ -760,7 +772,7 @@ export function createTelegramController(deps: {
   getSession: () => CapturedAgentSession | undefined;
   transport: TelegramTransport;
   ui: TelegramUiRuntime;
-  authorizeUser(userId: number | undefined, text?: string): Promise<boolean | "paired">;
+  authorizeUser(userId: number | undefined, text?: string, chatType?: string): Promise<boolean | "paired">;
   setActiveChatId(chatId: number): Promise<void>;
   getBotUsername(): string | undefined;
   telegramCommands: Map<string, TelegramCommandHandler>;
@@ -1361,6 +1373,12 @@ export function createTelegramController(deps: {
     confirmed = false,
   ): Promise<boolean> => {
     if (!isCurrent() || deps.getSession() !== session) return true;
+    // Quitting is terminal-only: never forward /quit or /exit to the host or the model.
+    if (TELEGRAM_BLOCKED_COMMANDS.has(name.toLowerCase())) {
+      await deps.transport.sendText(chatId, "Telegram 中不提供 /quit、/exit。重启请用 /restart；退出请在 SSH 中操作。", messageThreadId, sourceMessageId)
+        .catch(ctrlLog.swallow("warn", "sendText blocked-command notice failed", { chatId }));
+      return true;
+    }
     if (deps.getConfig?.().forumChatId !== undefined) {
       const policy = forumCommandPolicy(name);
       if (policy === "ssh") {
@@ -1419,6 +1437,10 @@ export function createTelegramController(deps: {
       deps.telegramCommands.get(name)
       ?? deps.telegramCommands.get(name.replace(/_/g, "-"))
       ?? deps.telegramCommands.get(name.replace(/-/g, "_"));
+    const externalCommand =
+      session.extensionRunner.getCommand(name)
+      ?? session.extensionRunner.getCommand(name.replace(/_/g, "-"))
+      ?? session.extensionRunner.getCommand(name.replace(/-/g, "_"));
 
     // Plugin-owned commands stay plugin-local even when the host catalog also
     // lists the name (v6 decision 48).
@@ -1458,10 +1480,33 @@ export function createTelegramController(deps: {
       return true;
     }
 
-    const externalCommand =
-      session.extensionRunner.getCommand(name)
-      ?? session.extensionRunner.getCommand(name.replace(/_/g, "-"))
-      ?? session.extensionRunner.getCommand(name.replace(/-/g, "_"));
+    // Extensions can describe fixed argument choices through Pi's completion API.
+    // On Telegram, an empty invocation becomes a real choice menu; an explicit
+    // argument keeps the normal direct path. This is intentionally limited to
+    // commands that publish their own completions, so arbitrary third-party text
+    // arguments are never guessed.
+    if (!args.trim() && externalCommand?.getArgumentCompletions) {
+      let completions: Array<{ value: string; label: string; description?: string }> | null = null;
+      try {
+        completions = await externalCommand.getArgumentCompletions("");
+      } catch (error) {
+        ctrlLog.debug("argument completions failed; using normal command path", { name, err: error });
+      }
+      if (completions && completions.length > 0) {
+        const labels = completions.map((item) => item.description ? `${item.label} — ${item.description}` : item.label);
+        void (async () => {
+          const selected = await deps.ui.create(chatId, messageThreadId, sourceMessageId)
+            .select(`/${name}：请选择参数`, labels);
+          if (!selected || !isCurrent() || deps.getSession() !== session) return;
+          const index = labels.indexOf(selected);
+          const item = index >= 0 ? completions![index] : undefined;
+          if (!item) return;
+          await dispatchNamedCommand(name, item.value, session, chatId, messageThreadId, sourceMessageId, confirmed);
+        })().catch(ctrlLog.swallow("warn", "command argument menu failed", { name, chatId, messageThreadId }));
+        return true;
+      }
+    }
+
     if (externalCommand) {
       ctrlLog.debug("command route", { name, route: "extension-command" });
       recordCommandUsage(name);
@@ -1518,6 +1563,8 @@ export function createTelegramController(deps: {
   return {
     async handleCallbackQuery(query) {
       if (!isCurrent()) return;
+      // Without a forum configuration, only private chats may control Pi.
+      if (deps.getConfig?.().forumChatId === undefined && query.message?.chat?.type !== "private") return;
       const chatId = query.message?.chat?.id;
       if (typeof chatId !== "number") return;
       const messageThreadId = query.message?.message_thread_id;
@@ -1590,6 +1637,12 @@ export function createTelegramController(deps: {
         return;
       }
 
+      // Pages of the removed "📋 命令" list may still sit in a topic; they no longer page.
+      if (data.startsWith(MENU_ALL_CALLBACK_PREFIX)) {
+        await deps.transport.sendText(chatId, "这个命令列表已过期，请点输入框旁的键盘图标查看全部命令。", messageThreadId, sourceMessageId);
+        return;
+      }
+
       const runName = decodeRunCallback(data);
       if (runName !== undefined) {
         const session = deps.getSession();
@@ -1612,6 +1665,8 @@ export function createTelegramController(deps: {
 
     async handleMessage(message) {
       if (!isCurrent()) return;
+      // Without a forum configuration, only private chats may control Pi.
+      if (deps.getConfig?.().forumChatId === undefined && message.chat?.type !== "private") return;
       const chatId = message.chat?.id;
       if (typeof chatId !== "number") return;
       const messageThreadId = message.message_thread_id;
@@ -1625,7 +1680,7 @@ export function createTelegramController(deps: {
         hasTextQuote: !!message.text_quote,
         hasExternalReply: !!message.external_reply,
       });
-      const authorization = await deps.authorizeUser(message.from?.id, rawText);
+      const authorization = await deps.authorizeUser(message.from?.id, rawText, message.chat?.type);
       if (!authorization || !isCurrent()) return;
       await deps.setActiveChatId(chatId);
       if (!isCurrent()) return;
@@ -1636,6 +1691,17 @@ export function createTelegramController(deps: {
 
       const text = normalizeLeadingCommand(rawText, deps.getBotUsername());
       const trimmed = text.trim();
+      if (trimmed === COMMAND_MENU_BUTTON) {
+        // The old single button may still be shown until the next "已接入" notice; swap it for
+        // the full command keyboard instead of prompting the model with the button text.
+        const config = deps.getConfig?.();
+        const keyboard = getTelegramCommandKeyboard(config?.botToken, config?.apiBase);
+        await deps.transport.sendText(chatId, keyboard.length > 0
+          ? "命令按钮已更新：点输入框旁的键盘图标即可查看全部命令。"
+          : "命令列表尚未同步，请稍后再试，或直接输入 /。", messageThreadId, sourceMessageId,
+          undefined, keyboard.length > 0 ? { replyKeyboard: keyboard } : undefined);
+        return;
+      }
       const replyToInput = message.reply_to_message?.message_id;
       if (trimmed.startsWith("!")) {
         const excludeFromContext = trimmed.startsWith("!!");
@@ -1713,18 +1779,14 @@ export function createTelegramController(deps: {
           const media = incomingMedia[i];
           const saveResult = mediaSaveResults[i];
           if (saveResult.status === "fulfilled") {
-            downloadedMediaLines.push(formatSavedIncomingAttachmentLine(media.type, media.fileId, media.fileName, saveResult.value));
+            downloadedMediaLines.push(formatSavedIncomingAttachmentLine(media.type, media.fileName, saveResult.value));
           } else {
             const reason = saveResult.reason instanceof Error ? saveResult.reason.message : String(saveResult.reason);
-            failedMediaLines.push(formatIncomingAttachmentErrorLine(media.type, media.fileId, media.fileName, reason));
+            failedMediaLines.push(formatIncomingAttachmentErrorLine(media.type, media.fileName, reason));
           }
         }
-        if (downloadedMediaLines.length > 0 || failedMediaLines.length > 0) {
-          const lines = [
-            formatIncomingAttachmentReceipt("saved", downloadedMediaLines),
-            formatIncomingAttachmentReceipt("failed", failedMediaLines),
-          ].filter(Boolean);
-          await deps.transport.sendText(chatId, lines.join("\n\n"), messageThreadId, sourceMessageId).catch(ctrlLog.swallow("warn", "sendText media receipt failed", { chatId, messageThreadId }));
+        if (failedMediaLines.length > 0) {
+          await deps.transport.sendText(chatId, formatIncomingAttachmentFailureNotice(failedMediaLines), messageThreadId, sourceMessageId).catch(ctrlLog.swallow("warn", "sendText media failure notice failed", { chatId, messageThreadId }));
         }
       }
       if (!isCurrent()) return;
@@ -1775,12 +1837,10 @@ export function createTelegramController(deps: {
       if (hasPromptInput) {
         const mediaBlock = (() => {
           if (!hasMediaInput) return "";
-          const lines = [mediaSummary];
           const statusLines = [...downloadedMediaLines, ...failedMediaLines];
-          if (statusLines.length > 0) {
-            lines.push(statusLines.join("\n"));
-          }
-          return `\n\n${lines.filter(Boolean).join("\n")}`;
+          // With per-attachment save results the summary lines would only repeat them.
+          const body = statusLines.length > 0 ? `[telegram attachment]\n${statusLines.join("\n")}` : mediaSummary;
+          return `\n\n${body}`;
         })();
         const handled = trimmed ? await tryHandleSlashCommand(text, chatId, messageThreadId, sourceMessageId) : false;
         if (!handled) {

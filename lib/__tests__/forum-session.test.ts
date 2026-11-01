@@ -1,10 +1,10 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ForumSession, forumBotId } from "../forum-session.ts";
+import { ForumSession, canonicalCwd, forumBotId, forumTopicName } from "../forum-session.ts";
 import { FORUM_BINDING_TYPE, type ForumBinding } from "../forum-binding.ts";
-import { TelegramInstanceCoordinator } from "../instance-coordinator.ts";
+import { TelegramInstanceCoordinator, forumTopicKey, telegramTokenHash } from "../instance-coordinator.ts";
 import { deliverForumUpdate, type ForumDelivery } from "../forum-router.ts";
 import { TelegramApiRequestError } from "../telegram-api.ts";
 import type { TelegramConfig } from "../types.ts";
@@ -16,7 +16,7 @@ const bound = (sessionId = "session-a", threadId = 11): ForumBinding => ({ versi
   botId, chatId: -100123, sessionId, threadId });
 const custom = (data: ForumBinding) => ({ type: "custom", customType: FORUM_BINDING_TYPE, data });
 
-async function fixture(options: { entries?: unknown[]; sessionId?: string; api?: any; rootDir?: string; id?: string } = {}) {
+async function fixture(options: { entries?: unknown[]; sessionId?: string; api?: any; rootDir?: string; id?: string; cwd?: string } = {}) {
   const rootDir = options.rootDir ?? await mkdtemp(join(tmpdir(), "forum-session-"));
   let sessionId = options.sessionId ?? "session-a";
   let config: TelegramConfig = { botToken: "123:fake-token-only", forumChatId: -100123, allowedUserId: 7 };
@@ -24,8 +24,12 @@ async function fixture(options: { entries?: unknown[]; sessionId?: string; api?:
   const entries = options.entries ?? [];
   const coordinator = new TelegramInstanceCoordinator({ rootDir, token: config.botToken!,
     instanceId: options.id ?? "a", startedAt: new Date(now).toISOString(), isPidAlive: () => true });
-  const ctx = { sessionManager: { getSessionId: () => sessionId, getEntries: () => entries,
+  const cwd = options.cwd ?? "/fake/a";
+  const ctx = { cwd, sessionManager: { getSessionId: () => sessionId, getEntries: () => entries,
     getSessionName: () => "Offline test" } } as any;
+  const topicKey = forumTopicKey(botId, -100123, canonicalCwd(cwd));
+  const mapped = () => coordinator.readForumTopic(topicKey);
+  const methods = () => api.mock.calls.map((c: any[]) => c[1]);
   const onUpdate = vi.fn(async (_d: ForumDelivery) => {});
   const api = options.api ?? vi.fn(async (_token: string, method: string) =>
     method === "createForumTopic" ? { message_thread_id: 11 } : true);
@@ -40,72 +44,91 @@ async function fixture(options: { entries?: unknown[]; sessionId?: string; api?:
     await session.reconciled(registration, snapshot.forumConflict);
     return snapshot;
   };
-  return { session, coordinator, ctx, api, entries, config, rootDir, reconcile, onUpdate,
+  return { session, coordinator, ctx, api, entries, config, rootDir, reconcile, onUpdate, mapped, methods,
     advance: (ms: number) => { now += ms; }, setSessionId: (id: string) => { sessionId = id; },
     setConfig: (value: TelegramConfig) => { config = value; } };
 }
 
 describe("forum session lifecycle without a model or Telegram", () => {
-  it("creates once, records intent first and becomes sendable only after publishing the new thread", async () => {
+  it("creates one directory topic, records intent first and is sendable only after publishing it", async () => {
     const f = await fixture();
     await f.session.prepare(f.ctx);
     expect(f.session.getTarget()).toBeUndefined();
     await f.reconcile();
-    expect(f.api).toHaveBeenCalledTimes(1);
-    expect(f.entries).toEqual([custom({ ...bound(), threadId: null, state: "create-unknown" }), custom(bound())]);
+    expect(f.methods()).toEqual(["createForumTopic"]);
+    expect(await f.mapped()).toEqual({ threadId: 11, cwd: "/fake/a" });
+    expect(f.entries).toEqual([]); // nothing is written into the Pi session any more
     expect(f.session.getTarget()).toBeUndefined();
     await f.reconcile();
-    expect(f.session.getTarget()?.threadId).toBe(11);
+    expect(f.session.getTarget()).toMatchObject({ sessionId: "session-a", threadId: 11 });
     await f.reconcile();
-    expect(f.api).toHaveBeenCalledTimes(1);
+    expect(f.methods()).toEqual(["createForumTopic"]);
   });
-  it("resumes, reloads, tree-navigates and compacts without creating another topic", async () => {
-    const f = await fixture({ entries: [custom(bound())] });
-    await f.session.prepare(f.ctx);
-    await f.reconcile();
+  it("names topics by home-relative directory", async () => {
+    expect(forumTopicName("/home/u/pi-main", "/home/u")).toBe("pi-main");
+    expect(forumTopicName("/home/u/work/tmp", "/home/u")).toBe("work/tmp");
+    expect(forumTopicName("/home/u", "/home/u")).toBe("~");
+    expect(forumTopicName("/home/user2", "/home/u")).toBe("/home/user2");
+    expect(forumTopicName("/srv/x", "/home/u")).toBe("/srv/x");
+    const f = await fixture();
+    await f.session.prepare(f.ctx); await f.reconcile();
+    expect(f.api.mock.calls[0][2]).toMatchObject({ name: "/fake/a" });
+  });
+  it.each(["new", "fork", "resume"])("%s in the same directory reuses the topic instead of creating one", async next => {
+    const f = await fixture();
+    await f.session.prepare(f.ctx); await f.reconcile(); await f.reconcile();
     const first = f.session.getTarget()!;
-    expect(first.threadId).toBe(11);
-    await f.session.prepare(f.ctx); // tree/compact/repeated context do not change session identity
-    await f.reconcile();
-    expect(f.session.getTarget()).toEqual(first);
-    expect(f.api.mock.calls.map((c: any[]) => c[1])).toEqual(["reopenForumTopic"]);
+    f.setSessionId(next);
+    await f.session.prepare(f.ctx); await f.reconcile(); await f.reconcile();
+    expect(f.session.getTarget()).toMatchObject({ sessionId: next, threadId: 11 });
+    expect(f.session.getTarget()!.generation).not.toBe(first.generation);
+    expect(f.methods()).toEqual(["createForumTopic", "reopenForumTopic"]);
+  });
+  it("a later Pi process in the same directory reuses the topic; another directory gets its own", async () => {
+    const f = await fixture();
+    await f.session.prepare(f.ctx); await f.reconcile();
     await f.session.close();
-    await f.session.prepare(f.ctx);
-    await f.reconcile();
-    expect(f.session.getTarget()?.threadId).toBe(11);
-    expect(f.session.getTarget()?.generation).not.toBe(first.generation);
-    expect(f.api.mock.calls.map((c: any[]) => c[1])).toEqual(["reopenForumTopic", "reopenForumTopic"]);
-  });
-  it.each(["new", "fork", "clone"])("%s ignores inherited bindings and creates a distinct session topic", async reason => {
+    const again = await fixture({ rootDir: f.rootDir, id: "b", sessionId: "session-b" });
+    await again.session.prepare(again.ctx); await again.reconcile(); await again.reconcile();
+    expect(again.session.getTarget()).toMatchObject({ sessionId: "session-b", threadId: 11 });
+    expect(again.methods()).toEqual(["reopenForumTopic"]);
     const api = vi.fn(async (_token: string, method: string) => method === "createForumTopic" ? { message_thread_id: 22 } : true);
-    const f = await fixture({ entries: [custom(bound())], sessionId: reason, api });
-    await f.session.prepare(f.ctx);
-    await f.reconcile(); await f.reconcile();
-    expect(f.session.getTarget()).toMatchObject({ sessionId: reason, threadId: 22 });
+    const other = await fixture({ rootDir: f.rootDir, id: "c", sessionId: "session-c", cwd: "/fake/c", api });
+    await other.session.prepare(other.ctx); await other.reconcile(); await other.reconcile();
+    expect(other.session.getTarget()).toMatchObject({ threadId: 22 });
     expect(api.mock.calls.map(c => c[1])).toEqual(["createForumTopic"]);
-    expect(f.entries[0]).toEqual(custom(bound()));
   });
-  it("never automatically recreates deleted topics or retries an unknown create result", async () => {
-    const api = vi.fn(async () => { throw new TelegramApiRequestError("Bad Request: message thread not found"); });
+  it("seeds the directory map once from a pre-directory session binding", async () => {
+    const f = await fixture({ entries: [custom(bound())] });
+    await f.session.prepare(f.ctx); await f.reconcile(); await f.reconcile();
+    expect(f.session.getTarget()?.threadId).toBe(11);
+    expect(f.methods()).toEqual(["reopenForumTopic"]);
+    expect(await f.mapped()).toEqual({ threadId: 11, cwd: "/fake/a" });
+  });
+  it("recreates a confirmed deleted topic once, but never retries an unknown create result", async () => {
+    const api = vi.fn(async (_token: string, method: string) => {
+      if (method === "reopenForumTopic") throw new TelegramApiRequestError("Bad Request: message thread not found");
+      return { message_thread_id: 12 };
+    });
     const f = await fixture({ entries: [custom(bound())], api });
-    await f.session.prepare(f.ctx);
-    await f.reconcile(); await f.reconcile();
-    expect(api).toHaveBeenCalledTimes(1);
-    expect(f.entries.at(-1)).toEqual(custom({ ...bound(), threadId: null, state: "topic-missing" }));
-    expect(f.session.getTarget()).toBeUndefined();
-    expect(f.session.lastError).toMatch(/删除/);
+    await f.session.prepare(f.ctx); await f.reconcile(); await f.reconcile();
+    expect(f.methods()).toEqual(["reopenForumTopic", "createForumTopic"]);
+    expect(f.session.getTarget()?.threadId).toBe(12);
+    expect(await f.mapped()).toEqual({ threadId: 12, cwd: "/fake/a" });
+
     const unknown = await fixture({ api: vi.fn(async () => { throw new Error("simulated lost HTTP response"); }) });
     await unknown.session.prepare(unknown.ctx);
     await unknown.reconcile(); unknown.advance(30_000); await unknown.reconcile();
     expect(unknown.api).toHaveBeenCalledTimes(1);
-    expect(unknown.entries.at(-1)).toEqual(custom({ ...bound(), threadId: null, state: "create-unknown" }));
+    expect(await unknown.mapped()).toEqual({ threadId: null, state: "create-unknown", cwd: "/fake/a" });
+    expect(unknown.session.lastError).toMatch(/retry/);
     await unknown.session.close(); await unknown.session.prepare(unknown.ctx); await unknown.reconcile();
     expect(unknown.api).toHaveBeenCalledTimes(1);
     expect(unknown.session.retryTopic()).toBe(true); // UI confirmation belongs to the local-only caller
     await unknown.reconcile();
     expect(unknown.api).toHaveBeenCalledTimes(2);
   });
-  it("does not bind a late create response to the replacement Pi session", async () => {
+  it("records a late create result for the directory without binding it to the replaced session", async () => {
     let resolve!: (value: unknown) => void;
     const pending = new Promise(r => { resolve = r; });
     const f = await fixture({ api: vi.fn(() => pending) });
@@ -114,23 +137,37 @@ describe("forum session lifecycle without a model or Telegram", () => {
     await vi.waitFor(() => expect(f.api).toHaveBeenCalledTimes(1));
     f.setSessionId("replacement");
     await f.session.prepare(f.ctx);
+    await f.reconcile(); // the unknown intent blocks a duplicate create from the replacement
+    expect(f.api).toHaveBeenCalledTimes(1);
     resolve({ message_thread_id: 99 }); await creating;
-    expect(f.entries).toHaveLength(1); // original intent only; no new-session binding from the late result
-    expect(f.session.registration()?.sessionId).toBe("replacement");
     expect(f.session.getTarget()).toBeUndefined();
+    expect(await f.mapped()).toEqual({ threadId: 99, cwd: "/fake/a" });
+    f.advance(3000); await f.reconcile(); await f.reconcile();
+    expect(f.session.getTarget()).toMatchObject({ sessionId: "replacement", threadId: 99 });
   });
-  it("rejects duplicate live session ownership before any create request", async () => {
-    const f = await fixture({ entries: [custom(bound())] });
+  it("lets only one online Pi per directory claim the topic", async () => {
+    const f = await fixture();
     await f.session.prepare(f.ctx); await f.reconcile();
-    const other = await fixture({ rootDir: f.rootDir, id: "b", entries: [custom(bound())] });
+    const other = await fixture({ rootDir: f.rootDir, id: "b", sessionId: "session-b" });
     await other.session.prepare(other.ctx);
     expect((await other.reconcile()).forumConflict).toBe("a");
     expect(other.api).not.toHaveBeenCalled();
     expect(other.session.getTarget()).toBeUndefined();
+    expect(other.session.lastError).toMatch(/目录/);
+  });
+  it("fails closed without any Telegram request when the directory map is unreadable", async () => {
+    const f = await fixture();
+    const dir = join(f.rootDir, "tg-runtime", telegramTokenHash("123:fake-token-only"));
+    await mkdir(dir, { recursive: true }); await writeFile(join(dir, "topics.json"), "{broken");
+    await f.session.prepare(f.ctx); await f.reconcile();
+    expect(f.api).not.toHaveBeenCalled();
+    expect(f.session.getTarget()).toBeUndefined();
+    expect(f.session.lastError).toMatch(/对照表/);
   });
   it("fences output on stale heartbeats, wrong users, old callbacks and a changed config", async () => {
     const f = await fixture({ entries: [custom(bound())] });
-    await f.session.prepare(f.ctx); const snapshot = await f.reconcile();
+    // First round loads the directory topic; the second publishes it (production: onChange reconciles).
+    await f.session.prepare(f.ctx); await f.reconcile(); const snapshot = await f.reconcile();
     const target = f.session.getTarget()!;
     const route = f.session.registration()!;
     const update = { update_id: 1, message: { message_id: 51, message_thread_id: 11,
@@ -150,8 +187,9 @@ describe("forum session lifecycle without a model or Telegram", () => {
   });
   it("handles an already open resumed topic without duplicating it", async () => {
     const f = await fixture({ entries: [custom(bound())], api: vi.fn(async () => { throw new TelegramApiRequestError("TOPIC_NOT_MODIFIED"); }) });
-    await f.session.prepare(f.ctx); await f.reconcile();
+    await f.session.prepare(f.ctx); await f.reconcile(); await f.reconcile();
     expect(f.session.getTarget()?.threadId).toBe(11);
+    expect(f.methods()).toEqual(["reopenForumTopic"]);
     expect(f.entries).toHaveLength(1);
     expect(f.session.retryTopic()).toBe(false);
   });

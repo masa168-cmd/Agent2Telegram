@@ -13,6 +13,7 @@ import { currentHostName } from "../tui/host.ts";
 import type { TuiHost } from "../tui-bridge.ts";
 import { configToolFlow, configThinkingFlow, configRetryFlow, configBashFlow } from "./tg-config.ts";
 import { formatPairingInstructions } from "../pairing.ts";
+import { getCurrentTelegramTurn } from "../turn-context.ts";
 import { formatDebugReport } from "./info.ts";
 import {
   addBotFlow,
@@ -123,6 +124,7 @@ export function registerTgMenuCommand(
       // controller's run-with-UI wrapper).
       ctx.ui as unknown as MenuUi,
       deps, configDeps, switchDeps, commandDeps, sessionDeps, ctx.cwd || process.cwd(),
+      getCurrentTelegramTurn() !== undefined,
     ),
   });
 }
@@ -137,9 +139,10 @@ async function runTgMenu(
   commandDeps: CommandMenuDeps | undefined,
   sessionDeps: SessionDeps | undefined,
   cwd: string,
+  telegramOrigin: boolean,
 ): Promise<void> {
   try {
-    await mainMenu(ui, deps, configDeps, switchDeps, commandDeps, sessionDeps, cwd);
+    await mainMenu(ui, deps, configDeps, switchDeps, commandDeps, sessionDeps, cwd, telegramOrigin);
   } catch (error) {
     if (!(error instanceof MenuClosed)) throw error;
   } finally {
@@ -155,17 +158,18 @@ async function mainMenu(
   commandDeps: CommandMenuDeps | undefined,
   sessionDeps: SessionDeps | undefined,
   cwd: string,
+  telegramOrigin: boolean,
 ): Promise<void> {
   const forumMode = deps.getConfig().forumChatId !== undefined;
   const options: string[] = MAIN_MENU_OPTIONS
     .filter(option => (commandDeps || option !== "⌨️ Commands")
-      && (!forumMode || (option !== "🤖 Bots" && option !== "📁 Project")))
+      && (!forumMode || !telegramOrigin || (option !== "🤖 Bots" && option !== "📁 Project")))
     .map(option => forumMode && option === "🔄 Switch instance" ? "🧵 Online sessions" : option);
   while (true) {
     const choice = await pick(ui, "Telegram Management", options);
     if (!choice || choice === "❌ Close") return;
 
-    if (forumMode && (choice === "🤖 Bots" || choice === "📁 Project")) {
+    if (forumMode && telegramOrigin && (choice === "🤖 Bots" || choice === "📁 Project")) {
       ui.notify("Bot、密钥和项目连接维护请使用手机 SSH；话题菜单不会修改全局 Bot。", "warning");
       continue;
     }

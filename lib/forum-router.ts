@@ -12,6 +12,8 @@ export type ForumRegistration = {
   sessionId: string;
   threadId: number | null;
   generation: string;
+  /** Canonical launch directory; one online Pi per directory and group owns its topic. */
+  cwdKey?: string;
   port: number;
   capability: string;
   /** Only button messages need missing-thread callback recovery. */
@@ -32,6 +34,7 @@ export function validForumRegistration(value: unknown): value is ForumRegistrati
     && typeof r.sessionId === "string" && !!r.sessionId
     && (r.threadId === null || (Number.isSafeInteger(r.threadId) && r.threadId > 0))
     && typeof r.generation === "string" && !!r.generation
+    && (r.cwdKey === undefined || (typeof r.cwdKey === "string" && !!r.cwdKey && r.cwdKey.length <= 4096))
     && Number.isSafeInteger(r.port) && r.port > 0 && r.port <= 65535
     && typeof r.capability === "string" && /^[\w-]{32,128}$/.test(r.capability)
     && (r.messageIds === undefined || (Array.isArray(r.messageIds) && r.messageIds.length <= 256

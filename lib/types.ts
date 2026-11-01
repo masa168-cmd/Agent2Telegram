@@ -31,6 +31,8 @@ export type BotRecord = {
   allowedUserId?: number;
   /** One-time local pairing code required before allowedUserId is set. */
   pairingCode?: string;
+  /** Epoch ms after which pairingCode is rejected; missing means expired. */
+  pairingCodeExpiresAt?: number;
   /** Override the Telegram Bot API base URL (e.g. a self-hosted local Bot API server or a test mock). */
   apiBase?: string;
 };
@@ -82,6 +84,8 @@ export type TelegramConfig = {
   allowedUserId?: number;
   /** One-time local pairing code required before allowedUserId is set. */
   pairingCode?: string;
+  /** Epoch ms after which pairingCode is rejected; missing means expired. */
+  pairingCodeExpiresAt?: number;
   /** Last chat that interacted with the bot. */
   activeChatId?: number;
   lastUpdateId?: number;
@@ -192,7 +196,8 @@ export type TelegramTransport = {
     messageThreadId?: number,
     replyToMessageId?: number,
     richMarkdown?: string,
-    options?: { maxAttempts?: number },
+    /** `replyKeyboard`: persistent reply keyboard rows (button texts) attached to the first chunk. */
+    options?: { maxAttempts?: number; replyKeyboard?: string[][] },
   ): Promise<TelegramSentMessage[]>;
   sendButtons(
     chatId: number,

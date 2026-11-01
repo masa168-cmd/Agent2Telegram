@@ -71,6 +71,7 @@ function createHarness(options: {
   session?: CapturedAgentSession;
   bridge?: TuiBridgeAdapter;
   config?: { bashConfirm?: "always" | "dangerous" | "never"; activeChatId?: number };
+  setActiveChatId?: (chatId: number) => Promise<void>;
   confirmResult?: boolean;
   telegramCommands?: Map<string, any>;
   confirm?: ReturnType<typeof vi.fn>;
@@ -100,7 +101,7 @@ function createHarness(options: {
       dispose: () => undefined,
     },
     authorizeUser: async () => true,
-    setActiveChatId: async () => undefined,
+    setActiveChatId: options.setActiveChatId ?? (async () => undefined),
     getBotUsername: () => "test-bot",
     telegramCommands: options.telegramCommands ?? new Map(),
     getActiveTurn: () => undefined,
@@ -233,17 +234,33 @@ describe("Telegram shell commands", () => {
     }
   });
 
-  it("rejects shell commands outside private chats", async () => {
+  it("ignores shell commands sent outside private chats", async () => {
     const runText = vi.spyOn(CommandGateway.prototype, "runText").mockResolvedValue(true);
     try {
       const harness = createHarness();
       await send(harness.controller, "!echo hi", 13, "supergroup");
 
       expect(runText).not.toHaveBeenCalled();
-      expect(harness.calls.some((call) => call.text?.includes("private chats"))).toBe(true);
+      expect(harness.calls).toHaveLength(0);
     } finally {
       runText.mockRestore();
     }
+  });
+
+  it("ignores group prompts and buttons from the paired user when no forum is configured", async () => {
+    const setActiveChatId = vi.fn(async () => undefined);
+    const harness = createHarness({ setActiveChatId });
+    await harness.controller.handleMessage({
+      message_id: 14, chat: { id: -100555, type: "supergroup" }, from: { id: 7 }, text: "hello from a group",
+    });
+    await harness.controller.handleCallbackQuery({
+      id: "cb-group", from: { id: 7 }, data: "anything",
+      message: { message_id: 15, chat: { id: -100555, type: "supergroup" } },
+    } as never);
+
+    expect(harness.session.prompt).not.toHaveBeenCalled();
+    expect(setActiveChatId).not.toHaveBeenCalled();
+    expect(harness.calls).toHaveLength(0);
   });
 
   it("refuses a new ! while a bash command is already running", async () => {

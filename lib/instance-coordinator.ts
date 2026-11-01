@@ -69,6 +69,26 @@ type CursorState = {
     updatedAt: string;
 };
 
+/** One forum topic per Bot + group + canonical launch directory, shared by every session there. */
+export type ForumTopicRecord = {
+    threadId: number | null;
+    /** Set while a createForumTopic result is unknown: never guess, require explicit SSH retry. */
+    state?: "create-unknown";
+    cwd: string;
+};
+type ForumTopicStore = { version: 1; topics: Record<string, ForumTopicRecord & { updatedAt: string }> };
+
+export function forumTopicKey(botId: string, chatId: number, cwdKey: string): string {
+    return JSON.stringify([botId, chatId, cwdKey]);
+}
+
+function validTopicRecord(value: unknown): value is ForumTopicRecord {
+    const r = value as ForumTopicRecord;
+    return !!r && typeof r === "object" && typeof r.cwd === "string" && !!r.cwd
+        && (r.threadId === null ? r.state === "create-unknown"
+            : Number.isSafeInteger(r.threadId) && r.threadId > 0 && r.state === undefined);
+}
+
 type CoordinatorLockOwner = {
     id: string;
     pid: number;
@@ -194,6 +214,7 @@ export class TelegramInstanceCoordinator {
     private readonly activePath: string;
     private readonly cursorPath: string;
     private readonly lockPath: string;
+    private readonly topicsPath: string;
     private readonly now: () => number;
     private readonly heartbeatStaleMs: number;
     private readonly isPidAlive: (pid: number) => boolean;
@@ -209,6 +230,7 @@ export class TelegramInstanceCoordinator {
         this.activePath = join(this.runtimeDir, "active.json");
         this.cursorPath = join(this.runtimeDir, "cursor.json");
         this.lockPath = join(this.runtimeDir, "state.lock");
+        this.topicsPath = join(this.runtimeDir, "topics.json");
         this.now = options.now ?? Date.now;
         this.heartbeatStaleMs = options.heartbeatStaleMs ?? DEFAULT_HEARTBEAT_STALE_MS;
         this.isPidAlive = options.isPidAlive ?? defaultIsPidAlive;
@@ -236,7 +258,10 @@ export class TelegramInstanceCoordinator {
                     && validForumRegistration(instance.forum) && instance.forum.botId === route.botId
                     && (instance.forum.sessionId === route.sessionId
                         || (route.threadId !== null && instance.forum.chatId === route.chatId
-                            && instance.forum.threadId === route.threadId)));
+                            && instance.forum.threadId === route.threadId)
+                        // One online Pi per launch directory and group: the directory owns the topic.
+                        || (route.cwdKey !== undefined && instance.forum.chatId === route.chatId
+                            && instance.forum.cwdKey === route.cwdKey)));
                 forumConflict = owner?.id;
                 // Claim under the same lock as publication. A rejected claimant must
                 // publish NO route, otherwise two rejected runtimes can block each other.
@@ -277,6 +302,43 @@ export class TelegramInstanceCoordinator {
             if (!active || active.instanceId !== expected.instanceId || active.generation !== expected.generation) return false;
             const live = await this.listAliveInstancesUnlocked(false);
             return live.some(instance => instance.id === expected.instanceId);
+        });
+    }
+
+    /** Throws on an unreadable map: callers must not guess a topic or create a duplicate. */
+    private async readTopicStoreUnlocked(): Promise<ForumTopicStore> {
+        let text: string;
+        try {
+            text = await readFile(this.topicsPath, "utf8");
+        } catch (error) {
+            if (isErrno(error, "ENOENT")) return { version: 1, topics: {} };
+            throw error;
+        }
+        const store = JSON.parse(text) as ForumTopicStore;
+        if (store?.version !== 1 || !store.topics || typeof store.topics !== "object" || Array.isArray(store.topics)) {
+            throw new Error("Unsupported forum topic map");
+        }
+        return store;
+    }
+
+    async readForumTopic(key: string): Promise<ForumTopicRecord | undefined> {
+        return await this.withStateLock(async () => {
+            const record = (await this.readTopicStoreUnlocked()).topics[key];
+            if (record === undefined) return undefined;
+            if (!validTopicRecord(record)) throw new Error("Invalid forum topic record");
+            const { updatedAt: _updatedAt, ...topic } = record;
+            return topic;
+        });
+    }
+
+    /** `onlyIfUnknown`: record a late create result only over its own still-unknown intent. */
+    async writeForumTopic(key: string, record: ForumTopicRecord, onlyIfUnknown = false): Promise<void> {
+        if (!validTopicRecord(record)) throw new Error("Invalid forum topic record");
+        await this.withStateLock(async () => {
+            const store = await this.readTopicStoreUnlocked();
+            if (onlyIfUnknown && store.topics[key]?.state !== "create-unknown") return;
+            store.topics[key] = { ...record, updatedAt: new Date(this.now()).toISOString() };
+            await this.writeJsonAtomic(this.topicsPath, store);
         });
     }
 

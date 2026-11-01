@@ -25,6 +25,14 @@ const TOOL_UPDATE_MS = 5000;
 const EDIT_LIMIT = 3500;
 export const STREAM_EDIT_MS = 1000;
 const STREAM_PREVIEW_CHARS = 600; // <= 3000 escaped UTF-8 bytes, even for '&' or emoji
+const PROCESS_CHARS = 600; // same byte bound for the merged process message
+// Telegram process summaries are intentionally hidden: final answers and explicit
+// tool results/errors are more useful and do not race each other in the chat.
+const PROCESS_MESSAGES_ENABLED = false;
+// The streaming "🤖 正在输出…" preview is off: while text streams it is unknown
+// whether a tool call follows, so intermediate notes flashed and were deleted.
+// Final answers are sent whole; Telegram's typing action shows Pi is working.
+const STREAM_PREVIEW_ENABLED = false;
 
 function formatThinkingInline(part: Record<string, any>, level: TelegramRenderLevel): string {
   if (level === "hidden") return "";
@@ -375,7 +383,66 @@ export function registerTelegramRenderer(
     }
   };
 
+  // All process lines (thinking, tool calls) of one Telegram turn share one
+  // message that is edited in place; the final answer is sent separately.
+  type ProcessMessage = { chatId: number; threadId?: number; sourceId?: number; lines: string[];
+    messageId?: number; lastAt: number; dirty: boolean; scheduled: boolean; chain: Promise<void> };
+  const turnProcesses = new WeakMap<TelegramTurn, ProcessMessage>();
+  const defaultProcesses = new Map<string, ProcessMessage>();
+
+  const processFor = (keyPrefix: string): ProcessMessage | undefined => {
+    const turn = deps.getActiveTurn();
+    const existing = turn ? turnProcesses.get(turn) : defaultProcesses.get(keyPrefix);
+    if (existing) return existing;
+    const chatId = turn?.chatId ?? defaultChats()[0];
+    if (chatId === undefined) return undefined;
+    const created: ProcessMessage = { chatId, threadId: turn?.messageThreadId, sourceId: turn?.sourceMessageId,
+      lines: [], lastAt: -Infinity, dirty: false, scheduled: false, chain: Promise.resolve() };
+    if (turn) turnProcesses.set(turn, created); else defaultProcesses.set(keyPrefix, created);
+    return created;
+  };
+
+  const renderProcess = (lines: string[]): string => {
+    const chars = Array.from(lines.join("\n"));
+    const body = chars.length > PROCESS_CHARS ? `…\n${chars.slice(-PROCESS_CHARS).join("")}` : chars.join("");
+    return `<b>⚙️ 过程</b>\n<blockquote expandable>${escapeHtml(body)}</blockquote>`;
+  };
+
+  const flushProcess = (proc: ProcessMessage): Promise<void> => {
+    proc.dirty = true;
+    if (proc.scheduled) return proc.chain;
+    proc.scheduled = true;
+    proc.chain = proc.chain.then(async () => {
+      const wait = proc.messageId === undefined ? 0 : Math.max(0, proc.lastAt + STREAM_EDIT_MS - Date.now());
+      if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait));
+      proc.scheduled = false;
+      if (!proc.dirty) return;
+      proc.dirty = false;
+      const html = renderProcess(proc.lines);
+      proc.lastAt = Date.now();
+      if (proc.messageId !== undefined) {
+        try { await deps.transport.editText(proc.chatId, proc.messageId, html); return; }
+        catch (err) {
+          renderLog.debug("process edit failed; sending a new process message", { chatId: proc.chatId, err });
+          proc.messageId = undefined;
+        }
+      }
+      const sent = await deps.transport.sendText(proc.chatId, html, proc.threadId, proc.sourceId);
+      proc.messageId = sent[0]?.message_id;
+    }).catch(err => { proc.scheduled = false; renderLog.warn("process message delivery failed", { err }); });
+    return proc.chain;
+  };
+
+  /** Wait for pending process edits so the final answer lands below them. */
+  const settleProcess = async () => {
+    const turn = deps.getActiveTurn();
+    const keyPrefix = eventTargetKey();
+    const proc = turn ? turnProcesses.get(turn) : keyPrefix ? defaultProcesses.get(keyPrefix) : undefined;
+    await proc?.chain;
+  };
+
   const sendInlineEvent = async (event: string) => {
+    if (!PROCESS_MESSAGES_ENABLED) return;
     const keyPrefix = eventTargetKey();
     if (!event || !keyPrefix) return;
     // Inline events quote tool arguments and thinking text — exactly where a
@@ -384,7 +451,12 @@ export function registerTelegramRenderer(
     const key = `${keyPrefix}:${text}`;
     if (sentInlineEvents.has(key)) return;
     sentInlineEvents.add(key);
-    await sendToTurn(`<blockquote>${escapeHtml(text)}</blockquote>`);
+    const proc = processFor(keyPrefix);
+    if (!proc) return;
+    proc.lines.push(text);
+    const pending = flushProcess(proc);
+    // Await only the first send; later edits are throttled in the background.
+    if (proc.messageId === undefined) await pending;
   };
 
   const sendInlineEvents = async (events: string[]) => {
@@ -408,6 +480,7 @@ export function registerTelegramRenderer(
     toolArgs.clear();
     toolUpdateAt.clear();
     workflowNoticeSent = false;
+    defaultProcesses.clear();
     const turn = deps.getActiveTurn();
     if (!turn) return;
     if (turn.replaceMessageId !== undefined) await deps.transport.editText(turn.chatId, turn.replaceMessageId, "🤖 <b>Working…</b>");
@@ -475,7 +548,10 @@ ${partial}`);
     const status = event.isError ? "❌ Tool failed" : "✅ Tool finished";
     if (level === "brief") {
       if (!event.isError) return;
-      await sendInlineEvent(formatToolFailureBrief(event.toolName, event.result, args));
+      // Failures remain visible, but as a normal standalone message rather than
+      // an entry in the hidden process summary.
+      const failure = redactFor(deps.getActiveTurn(), formatToolFailureBrief(event.toolName, event.result, args));
+      await sendNewToEventTarget(escapeHtml(failure));
       return;
     }
     // full mode: render the tool's actual output (text + images) as a
@@ -490,7 +566,7 @@ ${partial}`);
       const tag = expandable ? "<blockquote expandable>" : "<blockquote>";
       await sendNewToEventTarget(`${tag}${header}\n${rendered}</blockquote>`);
     } else {
-      await sendInlineEvent(`${status}: ${event.toolName}`);
+      await sendNewToEventTarget(escapeHtml(redactFor(deps.getActiveTurn(), `${status}: ${event.toolName}`)));
     }
     const eventTurn = deps.getActiveTurn();
     for (const image of parts.images) {
@@ -527,6 +603,9 @@ ${partial}`);
         lease, lastAt: -Infinity, text: "" };
       previews.set(key, preview);
     }
+    // Disabled preview: the record above still pins this reply to its original
+    // destination (lease), so a session switch cannot move its final answer.
+    if (!STREAM_PREVIEW_ENABLED) return;
     const now = Date.now();
     if (preview.inFlight || preview.text === html || now - preview.lastAt < STREAM_EDIT_MS) return;
     preview.lastAt = now;
@@ -566,7 +645,21 @@ ${partial}`);
     const thinkingLevel = renderLevel(config, "thinking");
     const toolLevel = renderLevel(config, "tool");
     const rendered = contentToRenderParts(message.content, thinkingLevel, toolLevel);
+    // A reply that also calls tools is still part of the process: its text goes
+    // into the merged process message, not into a separate answer bubble.
+    const isProcessStep = Array.isArray(message.content)
+      && message.content.some((p) => (p as { type?: string } | null)?.type === "toolCall");
+    if (isProcessStep) {
+      const thinking = rendered.inlineEvents.filter((e) => e.startsWith("💭"));
+      const others = rendered.inlineEvents.filter((e) => !e.startsWith("💭"));
+      await sendInlineEvents(thinking);
+      if (rendered.body.trim()) await sendInlineEvent(`💬 ${rendered.body.trim()}`);
+      await sendInlineEvents(others);
+      if (usablePreview) await deps.transport.deleteMessage(usablePreview.chatId, usablePreview.messageId!).catch(() => undefined);
+      return;
+    }
     await sendInlineEvents(rendered.inlineEvents);
+    await settleProcess();
     // Redact the whole reply (prose *and* the oversized code blocks pulled out
     // of it below) before it is converted to HTML or sent as Markdown (§4.7.4).
     const rawBody = redactFor(deps.getActiveTurn(), rendered.body || message.errorMessage || "");

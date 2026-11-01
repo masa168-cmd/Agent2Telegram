@@ -6,8 +6,8 @@ export function isCredentialTitle(title: string): boolean {
 }
 export function forumCommandPolicy(name: string): "ssh" | "confirm" | undefined {
   const command = name.toLowerCase().replace(/_/g, "-");
-  if (["login", "logout", "auth", "tg-forum"].includes(command)) return "ssh";
-  if (["share", "quit", "exit"].includes(command)) return "confirm";
+  if (["login", "logout", "auth", "tg-forum", "tg-setup"].includes(command)) return "ssh";
+  if (["share"].includes(command)) return "confirm";
 }
 export function isCredentialDialog(model: DialogModel, component: object, entry?: EntryInfo): boolean {
   const ctor = (component as { constructor?: { name?: string } }).constructor?.name ?? "";

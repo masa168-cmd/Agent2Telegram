@@ -71,7 +71,8 @@ describe("two independent offline Node peers (no Pi process, Bot or model)", () 
     await vi.waitFor(async () => {
       expect((await a.request("state")).prompts).toEqual(["alpha"]);
       const s = await b.request("state"); expect(s.prompts).toEqual(["beta"]);
-      expect(s.outputs.some((o: any) => o.kind === "edit" && o.text.includes("reply-b:beta"))).toBe(true);
+      expect(s.outputs.some((o: any) => o.kind === "text" && o.text.includes("reply-b:beta"))).toBe(true);
+      expect(s.outputs.some((o: any) => o.text?.includes("partial-b:beta"))).toBe(false);
     });
     expect((await a.request("dispatch", message(2, 22, "beta"))).duplicate).toBe(true);
     expect((await a.request("dispatch", message(3, 22, "wrong-user", 8))).accepted).toBe(false);

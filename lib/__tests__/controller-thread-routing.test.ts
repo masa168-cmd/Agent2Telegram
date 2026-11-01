@@ -79,8 +79,8 @@ describe("Telegram controller thread routing", () => {
       },
     });
 
-    await controller.handleMessage({ message_id: 101, message_thread_id: 10, chat: { id: 111 }, from: { id: 1 }, text: "topic A" });
-    await controller.handleMessage({ message_id: 201, message_thread_id: 20, chat: { id: 111 }, from: { id: 1 }, text: "topic B" });
+    await controller.handleMessage({ message_id: 101, message_thread_id: 10, chat: { id: 111, type: "private" }, from: { id: 1 }, text: "topic A" });
+    await controller.handleMessage({ message_id: 201, message_thread_id: 20, chat: { id: 111, type: "private" }, from: { id: 1 }, text: "topic B" });
 
     await vi.waitFor(() => expect(prompts).toEqual(["topic A", "topic B"]));
     expect([...activeTurns.values()]).toEqual(expect.arrayContaining([

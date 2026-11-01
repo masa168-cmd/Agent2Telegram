@@ -89,7 +89,7 @@ function createController(session: any, sent: Array<{ text: string }>) {
 async function sendMessage(controller: ReturnType<typeof createTelegramController>, text: string, messageId = 1) {
   await controller.handleMessage({
     message_id: messageId,
-    chat: { id: 999 },
+    chat: { id: 999, type: "private" },
     from: { id: 1 },
     text,
   });

@@ -88,7 +88,7 @@ describe("Telegram renderer turn routing", () => {
     expect(sent.find((item) => item.messageThreadId === 20 && item.text.includes("topic A"))).toBeUndefined();
   });
 
-  it("deduplicates inline tool events per chat/thread instead of globally", async () => {
+  it("does not send hidden inline tool events from any chat or thread", async () => {
     const { emit, sent } = createRendererHarness();
     const turnA: TelegramTurn = { chatId: 111, messageThreadId: 10, queuedAttachments: [] };
     const turnB: TelegramTurn = { chatId: 111, messageThreadId: 20, queuedAttachments: [] };
@@ -97,10 +97,7 @@ describe("Telegram renderer turn routing", () => {
     await runWithTelegramTurn(turnA, () => emit("tool_execution_start", event));
     await runWithTelegramTurn(turnB, () => emit("tool_execution_start", event));
 
-    expect(sent.filter((item) => item.text.includes("read"))).toEqual([
-      expect.objectContaining({ chatId: 111, messageThreadId: 10 }),
-      expect.objectContaining({ chatId: 111, messageThreadId: 20 }),
-    ]);
+    expect(sent.filter((item) => item.text.includes("read"))).toEqual([]);
   });
 
   it("does not fall back to activeChatId when active turns exist but the event has no turn context", async () => {
@@ -150,9 +147,33 @@ describe("Telegram renderer turn routing", () => {
       });
     });
 
+    // Failures remain visible as a standalone message, not inside ⚙️ 过程.
+    await vi.waitFor(() => expect(sent.some((item) => item.text.includes("❌ bash"))).toBe(true), { timeout: 3000 });
     const failure = sent.find((item) => item.text.includes("❌ bash"));
     expect(failure?.text).toContain("Command aborted");
     expect(failure?.text).not.toContain('"content"');
+    expect(failure?.text).not.toContain("⚙️");
+  });
+
+  it("hides process lines and sends only the final answer", async () => {
+    const { emit, sent } = createRendererHarness({ tool: "brief" });
+    const turn: TelegramTurn = { chatId: 333, queuedAttachments: [] };
+
+    await runWithTelegramTurn(turn, async () => {
+      await emit("tool_execution_start", { toolCallId: "r1", toolName: "read", args: { path: "/tmp/a.txt" } });
+      await emit("tool_execution_start", { toolCallId: "r2", toolName: "read", args: { path: "/tmp/b.txt" } });
+      await emit("tool_execution_start", { toolCallId: "b1", toolName: "bash", args: { command: "ls" } });
+      await emit("message_end", { message: { role: "assistant", content: [
+        { type: "text", text: "checking files" },
+        { type: "toolCall", name: "read", arguments: { path: "/tmp/a.txt" } },
+      ] } });
+      await emit("message_end", { message: { role: "assistant", content: "final answer" } });
+    });
+
+    expect(sent.some((item) => item.text.includes("⚙️"))).toBe(false);
+    expect(sent.some((item) => item.text.includes("/tmp/a.txt"))).toBe(false);
+    expect(sent.some((item) => item.text.includes("checking files"))).toBe(false);
+    expect(sent.filter((item) => item.text.includes("final answer"))).toHaveLength(1);
   });
 
   it("sends Markdown tables as a Rich Message and keeps the HTML fallback alongside", async () => {

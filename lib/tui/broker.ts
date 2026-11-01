@@ -243,6 +243,8 @@ export class DialogBroker {
   private refreshTimer?: ReturnType<typeof setInterval>;
   private sequence = 0;
   private readonly sshOnly = new WeakSet<DialogSession>();
+  /** A pending first send has no message ID yet; refreshes must not enqueue another. */
+  private readonly sending = new WeakSet<DialogSession>();
 
   constructor(private readonly deps: BrokerDeps) {}
 
@@ -350,7 +352,7 @@ export class DialogBroker {
    */
   private retire(session: DialogSession | undefined, next: FocusInfo): DialogSession["closedBy"] | undefined {
     if (!session || session.state === "closed") return undefined;
-    const byTelegram = session.state === "resolving";
+    const byTelegram = session.state === "resolving" || session.telegramSubmitted === true;
     session.state = "closed";
     this.forgetPending(session);
     const telegram = session.telegram;
@@ -372,10 +374,7 @@ export class DialogBroker {
     }
 
     session.closedBy = byTelegram ? "telegram" : "terminal";
-    const summary = byTelegram
-      ? `✅ ${isSecretSession(session) ? "Submitted (hidden)" : session.lastAction ?? "Done"}`
-      : "Answered in the terminal";
-    this.publish(session, summary);
+    this.publish(session, this.completionSummary(session));
     return session.closedBy;
   }
 
@@ -521,6 +520,7 @@ export class DialogBroker {
       return refuse("row-gone", "The list changed. Please choose again", false);
     }
 
+    if (ctx.entry?.race?.settled) return refuse("already-answered", "This input has already been answered");
     session.model = model;
     session.state = "resolving";
     session.lastAction = resolved.label;
@@ -534,7 +534,9 @@ export class DialogBroker {
     // or it may stay open (multi-select, settings rows).
     if (this.session === session && session.state === "resolving") {
       if (this.canDrive(session)) {
-        session.state = "open";
+        // A winning race has already submitted the answer, even if the host's
+        // abort/focus-close event arrives later. Ordinary in-place actions stay open.
+        session.state = ctx.entry?.race?.settled ? "resolving" : "open";
         this.redraw(session);
       } else {
         this.retire(session, this.deps.focus.current());
@@ -572,13 +574,24 @@ export class DialogBroker {
     // search box (or the editor), which the user never asked for.
     const subject = (session.subject ?? session.focus) as Record<string, unknown>;
     const ctx = this.context(subject, this.deps.focus.current());
-    const driven = purpose === "input" || purpose === "editor"
+    const alreadyAnswered = ctx.entry?.race?.settled === true;
+    const previousState = session.state;
+    const previousAction = session.lastAction;
+    const previousSubmission = session.telegramSubmitted;
+    if (!alreadyAnswered && purpose !== "search") {
+      // Submission can synchronously close focus inside act()/writeText(). Mark
+      // its origin first, and never put the answer itself in a completion summary.
+      session.state = "resolving";
+      session.telegramSubmitted = effectiveInput(session.model) !== undefined;
+      session.lastAction = secret ? "Submitted (hidden)" : "Submitted";
+    }
+    const driven = !alreadyAnswered && (purpose === "input" || purpose === "editor"
       ? this.act(subject, { type: "submit", text }, ctx)
       : purpose === "search"
         ? this.act(subject, { type: "search", query: text }, ctx)
-        : false;
+        : false);
     const modeledField = effectiveInput(session.model) !== undefined;
-    const written = driven || (!modeledField && this.deps.writeText(purpose === "search" ? text : `${text}\r`));
+    const written = !alreadyAnswered && (driven || (!modeledField && this.deps.writeText(purpose === "search" ? text : `${text}\r`)));
     const telegram = session.telegram;
     // The secret travelled in a Telegram message either way: it is deleted even
     // when the host refused it, because the chat is the one place it is readable.
@@ -587,11 +600,18 @@ export class DialogBroker {
       void this.deps.transport.deleteMessage(telegram.chatId, messageId).catch(() => undefined);
     }
     if (!written) {
-      return { handled: true, toast: "The host did not accept this input" };
+      if (session.state !== "closed") {
+        session.state = previousState;
+        session.lastAction = previousAction;
+        session.telegramSubmitted = previousSubmission;
+      }
+      return { handled: true, toast: alreadyAnswered ? "This input has already been answered" : "The host did not accept this input" };
     }
     if (this.session === session && session.state !== "closed") {
-      if (this.canDrive(session)) this.redraw(session);
-      else this.retire(session, this.deps.focus.current());
+      if (this.canDrive(session)) {
+        session.state = ctx.entry?.race?.settled ? "resolving" : "open";
+        this.redraw(session);
+      } else this.retire(session, this.deps.focus.current());
     }
     return { handled: true };
   }
@@ -740,7 +760,13 @@ export class DialogBroker {
     // to"), the chat goes back to the first page, like the terminal does; a
     // repaint of the same list that only moves a cursor or refreshes a value
     // keeps it.
-    if (!sameList(session.model, model)) session.page = 0;
+    if (!sameList(session.model, model)) {
+      session.page = 0;
+      session.telegramSubmitted = undefined;
+    }
+    // Returning from a field to an in-place list/search is not completion of
+    // that outer dialog. A plain input/editor keeps its origin until focus closes.
+    if (!effectiveInput(model)) session.telegramSubmitted = undefined;
     // The buttons are replaced by this draw, so the previous generation dies with them - but
     // only when the buttons themselves changed. OMP repaints an unchanged question and moves a
     // cursor the keyboard never shows, which used to report the keyboard the user is looking at
@@ -885,18 +911,41 @@ export class DialogBroker {
     this.rememberKeys(session, rendered.keyMap);
     const signature = `${session.page}|${rendered.text}|${JSON.stringify(rendered.rows)}`;
     const fresh = telegram.messageId <= 0;
-    if (!fresh && session.published === signature) return;
+    if (this.sending.has(session) || (!fresh && session.published === signature)) return;
     session.published = signature;
 
     if (fresh) {
       const chatId = telegram.chatId;
-      void this.deps.transport
-        .sendButtons(chatId, rendered.text, rendered.rows, telegram.messageThreadId, session.owner?.sourceMessageId)
-        .then((sent) => {
-          // The message may have been retired while the send was in flight.
-          if (this.session === session) session.telegram = { ...telegram, messageId: sent.message_id };
+      this.sending.add(session);
+      void Promise.resolve()
+        .then(() => {
+          if (this.session !== session || session.state === "closed" || session.telegram !== telegram || !this.deps.enabled()) return { message_id: 0 };
+          return this.deps.transport.sendButtons(chatId, rendered.text, rendered.rows, telegram.messageThreadId, session.owner?.sourceMessageId);
         })
-        .catch((err) => brokerLog.debug("sendButtons failed", { err, chatId }));
+        .then((sent) => {
+          this.sending.delete(session);
+          if (sent.message_id <= 0) return;
+          const placement = { ...telegram, messageId: sent.message_id };
+          if (this.session !== session || session.state === "closed" || session.telegram !== telegram || !this.deps.enabled()) {
+            // Never attach a late response to a new/withdrawn dialog. Strip its
+            // keyboard independently of coalesced edits for the current dialog.
+            void this.deps.transport.removeInlineKeyboard(chatId, sent.message_id).catch(() => undefined);
+            if (this.session === session && session.state === "closed" && session.telegram === telegram && this.deps.enabled()) {
+              session.telegram = placement;
+              this.publish(session, this.completionSummary(session));
+            }
+            return;
+          }
+          session.telegram = placement;
+          // Refreshes may have changed the model during the send. Only now can
+          // the newest frame edit this one message instead of starting another.
+          if (this.canDrive(session)) this.redraw(session);
+          else this.retire(session, this.deps.focus.current());
+        })
+        .catch((err) => {
+          this.sending.delete(session);
+          brokerLog.debug("sendButtons failed", { err, chatId });
+        });
       return;
     }
     this.rate(telegram, () => {
@@ -910,6 +959,12 @@ export class DialogBroker {
           brokerLog.debug("editButtons failed", { err });
         });
     });
+  }
+
+  private completionSummary(session: DialogSession): string {
+    return session.closedBy === "telegram"
+      ? `✅ ${isSecretSession(session) ? "Submitted (hidden)" : session.lastAction ?? "Done"}`
+      : "Answered in the terminal";
   }
 
   /** The one-line replacement for a finished dialog (rules 4.2/4.3). */

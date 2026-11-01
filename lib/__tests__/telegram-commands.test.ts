@@ -45,7 +45,10 @@ function makeBot(overrides: Partial<BotRecord> = {}): BotRecord {
     token: overrides.token ?? "tok-1",
     ...(overrides.botUsername === undefined ? {} : { botUsername: overrides.botUsername }),
     ...(overrides.allowedUserId === undefined ? {} : { allowedUserId: overrides.allowedUserId }),
-    ...(overrides.pairingCode === undefined ? {} : { pairingCode: overrides.pairingCode }),
+    ...(overrides.pairingCode === undefined ? {} : {
+      pairingCode: overrides.pairingCode,
+      pairingCodeExpiresAt: overrides.pairingCodeExpiresAt ?? Date.now() + 10 * 60_000,
+    }),
   };
 }
 

@@ -21,6 +21,22 @@
 
 上游 TUI bridge 保留自己的版本门禁；“源码允许的版本”不等于“本 fork 完成了真实宿主验收”。入口保留同步工厂，宿主模块通过 type import 或受保护的动态解析加载。
 
+### 上下文预算新增验证（本地源码，真实验收另行进行）
+
+D1/D2 历史交付（2026-10-28）`npm run check:offline`：**82 个文件 / 1124 项通过**，类型与 changelog 检查通过；含既有 F1 回归及本功能新增 110 项。安装版 Pi 1.4.0 官方装载器在隔离进程中加载入口、验证命令/事件注册和缺失会话拒绝路径通过；未触发 `session_start`、创建真实 AgentSession/ModelRuntime、加载真实凭据或连接 Telegram/模型。两次最终检查的外网 guard 均无拦截记录，不等于 OS 沙箱或真实运行验收。
+
+- `context-budget-config.test.ts`：合成项目中的精确 cwd、schema/整数、0600 原子保存、并发版本冲突、符号链接拒绝、锁/写入失败与运行回退；不读真实配置。
+- `context-budget-runtime.test.ts`：真实 SDK **SettingsManager.inMemory** 和 `shouldCompact` 配合合成 Provider，验证严格阈值、多模型/类型/接口保留、实例级读取适配、普通设置保存后阈值保持、过期窗口拒绝、退出及重复装卸恢复。没有真实账号/模型请求，也没有在运行中 Pi 替换方法。
+- `context-budget-command.test.ts`、`controller-command-routing.test.ts`、`forum-entry.test.ts`：共享菜单、取消/并发/忙碌/过期确认、恢复默认待重载、下划线命令归一、实际扩展入口配模拟 Telegram 的用户/话题隔离及回读通知。手机真实显示和输入体验仍未验收。
+- 模型列表修正回归：真实 SDK 同步 `ModelRegistry` 外观配合虚构认证快照，验证只取可用聊天模型，不走异步认证/刷新；空列表不退回完整目录，当前模型仅在可用时前置，未列出规则保留并可单独删除，确认期间可用性变化拒绝写入，`status` 独立读取实际值。
+- `context-budget-picker.test.ts`：真实 SDK `SelectList` 及 regular/fullscreen 两种 TUI 渲染器，使用虚构终端/主题数据测试 1000 项连续双向移动、小屏、缩放、首尾、中文/长名称和单次完成；现有 DialogBroker 配模拟 Telegram 测远端分页、错误话题/过期按钮、双端先答及取消。不是抓取真实终端画面，不发 Bot 请求。
+- Pi 1.4.0 的普通 `ui.select()` 没有滚动窗口；预算长列表改用官方 `ui.custom()` + `SelectList`。组件显式提供现有适配器可读取的列表，Telegram 经同一组件按键路径回答；后续短动作/input/confirm 保持标准接口及既有竞答。没有修改 Pi 核心、通用桥接或 F1 文件；这不修复其他扩展的长选择框。
+- 修正前的 `applyOverrides` 方案在真实 SDK 保存默认模型或主题后把预留量恢复为 16384，窗口却仍为 1050000；两个对应回归必须保持正确阈值，不能删掉断言或只测模拟模型 getter 切换。
+
+**适配限制**：仅 Pi 1.4.0、捕获的当前会话实例；包装公开 `getCompactionReserveTokens(model)`，不改 prototype、私有字段、原生 settings 文件或 Pi 安装代码。核心 `getCompactionSettings(model)` 经该方法读取派生余量；`pi.getSettings()` 仍是原生快照。方法/Provider 所有权变化时拒绝覆盖，退出时不撤别人的包装；本包装即使被别人持有，停用后也只委托原方法。该机制不是官方扩展钩子的跨版本承诺。
+
+本节记录离线证据。无 Bot 临时实例的原生试用暴露了完整目录和长列表问题，不能以历史 1124 项通过代替修正后的回归；修正版的原生续验与手机验收仍需完成。未切换开发 Pi 或恢复测试 A，未删除旧项目 settings/long-context。新旧实现需成对切换并单独验证加载与实际阈值；服务端是否接受指定长上下文不由离线测试或本地窗口声明证明。
+
 ## 本 fork 的离线检查如何运行
 
 ```bash
@@ -45,6 +61,7 @@ npm run check:offline
 | 文件与下载 | 同上、`forum-transport.test.ts`、上游附件测试 | 虚构下载保存到捕获 cwd，随机清理文件名；退出后迟到下载不写文件、不提示模型；输出/编辑/图片/typing 的 thread 围栏；不证明真实 Telegram 文件大小、权限和移动端体验 |
 | 助手正文流式 | `forum-streaming.test.ts` | token 路径不等待 Bot IO，1 秒限频、600 Unicode 字符预览、完整最终替换/长结果发送、secret-store 脱敏、旧消息不迁移到新代次；不证明真实网络的延迟或限流体验 |
 | UI 与敏感边界 | `forum-controller.test.ts`、`tui-broker.test.ts`、`tg-menu.test.ts` 等 | 非敏感本地/远程交互、先回答者生效、旧回调、禁止群 Shell、登录留 SSH、分享/退出确认及在线话题链接；不证明任意第三方 custom TUI 可读或安全 |
+| 上下文预算 | 上述 `context-budget-*.test.ts` 及命令/论坛入口测试 | 精确窗口/阈值与实例级方法恢复、普通设置保存后保持、持久数据和授权回归；不证明原生 TUI/真实 Telegram、账号容量或实际长输入 |
 | 上游回归 | 其他 `lib/__tests__/*.test.ts` | 原有命令、队列、渲染、Markdown、TUI adapters 等模块回归；其中 OMP mock 用例通过不转化为本 fork 的 OMP 支持承诺 |
 
 所有测试路径相对 `lib/__tests__/`。测试 ACK、状态计数和 mock 断言只表示对应离线层级通过，不包装成“手机已验证”。

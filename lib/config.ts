@@ -264,6 +264,7 @@ export function materializeTelegramConfig(
     ...(bot.botUsername === undefined ? {} : { botUsername: bot.botUsername }),
     ...(bot.allowedUserId === undefined ? {} : { allowedUserId: bot.allowedUserId }),
     ...(bot.pairingCode === undefined ? {} : { pairingCode: bot.pairingCode }),
+    ...(bot.pairingCodeExpiresAt === undefined ? {} : { pairingCodeExpiresAt: bot.pairingCodeExpiresAt }),
     ...(bot.apiBase === undefined ? {} : { apiBase: bot.apiBase }),
   };
 
@@ -533,6 +534,7 @@ function createBotRecordFromConfig(config: TelegramConfig, name: string): BotRec
     ...(config.botUsername === undefined ? {} : { botUsername: config.botUsername }),
     ...(config.allowedUserId === undefined ? {} : { allowedUserId: config.allowedUserId }),
     ...(config.pairingCode === undefined ? {} : { pairingCode: config.pairingCode }),
+    ...(config.pairingCodeExpiresAt === undefined ? {} : { pairingCodeExpiresAt: config.pairingCodeExpiresAt }),
     ...(config.apiBase === undefined ? {} : { apiBase: config.apiBase }),
   };
 }

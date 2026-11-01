@@ -5,8 +5,13 @@
  * recording `sendKey`; the last block drives the real pi 1.4.0 components so a
  * host upgrade that renames a field or re-points a key fails here.
  */
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import * as host from "@earendil-works/pi-coding-agent";
+import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
+import { KeybindingsManager } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js";
 import { TrustSelectorComponent as RealTrustSelectorComponent } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/trust-selector.js";
 import { pickAdapter } from "../tui/adapters/index.ts";
 import { piListAdapter } from "../tui/adapters/pi-lists.ts";
@@ -263,5 +268,71 @@ describe("contract: real pi 1.4.0 components", () => {
     expect(piListAdapter.act(trust, { type: "choose", key: model.items[target].key }, ctx)).toBe(true);
     expect(selections).toHaveLength(1);
     expect(selections[0].trusted).toBe(false);
+  });
+});
+
+describe("save as default (/model, /thinking)", () => {
+  // Interactive mode installs pi's app keybindings (`app.thinking.save` = ctrl+s) at startup;
+  // install the same defaults here from an empty agent dir, then restore the previous manager.
+  let previousKeybindings: ReturnType<typeof getKeybindings>;
+  let agentDir: string;
+  beforeAll(() => {
+    host.initTheme("dark");
+    previousKeybindings = getKeybindings();
+    agentDir = mkdtempSync(join(tmpdir(), "pi-keys-"));
+    setKeybindings(KeybindingsManager.create(agentDir));
+  });
+  afterAll(() => {
+    setKeybindings(previousKeybindings);
+    rmSync(agentDir, { recursive: true, force: true });
+  });
+
+  it("/model: footer toggle switches a tap from enter to cursor + ctrl+s, and marks the saved default", () => {
+    const { ctx, sent } = harness();
+    const component = Object.assign(new ModelSelectorComponent(), { defaultModel: { provider: "google", id: "gemini" } });
+    const off = expectSelect(piListAdapter.read(component, ctx));
+    expect(off.extraActions).toEqual([{ label: "⭐ 设为默认：关", key: "dflt" }]);
+    expect(off.items.map((item) => item.label)).toContain("google/gemini (默认)");
+    // Off: a tap only picks for this session.
+    expect(piListAdapter.act(component, { type: "choose", key: off.items[3].key }, ctx)).toBe(true);
+    expect(sent).toEqual(["down", "down", "enter"]);
+    sent.length = 0;
+    expect(piListAdapter.act(component, { type: "key", name: "dflt" }, ctx)).toBe(true);
+    expect(sent).toEqual([]);
+    const on = expectSelect(piListAdapter.read(component, ctx));
+    expect(on.extraActions?.[0]?.label).toBe("⭐ 设为默认：开（点选即保存）");
+    expect(piListAdapter.act(component, { type: "choose", key: on.items[3].key }, ctx)).toBe(true);
+    expect(sent).toEqual(["down", "down", "ctrl-s"]);
+    // Only the advertised key is accepted; lists without a host default get no toggle.
+    expect(piListAdapter.act(component, { type: "key", name: "tab" }, ctx)).toBe(false);
+    expect(piListAdapter.act(new OAuthSelectorComponent(), { type: "key", name: "dflt" }, ctx)).toBe(false);
+    expect(expectSelect(piListAdapter.read(new OAuthSelectorComponent(), ctx)).extraActions).toBeUndefined();
+  });
+
+  it("/thinking (real pi 1.4.0): rows, current and default read, enter selects, save mode calls onSelectAsDefault", () => {
+    const picked: string[] = [];
+    const saved: string[] = [];
+    const selector = new host.ThinkingSelectorComponent("high", ["off", "low", "medium", "high"],
+      (level: string) => picked.push(level), () => {}, (level: string) => saved.push(level), "medium");
+    const ctx: AdapterContext = { host: "pi", sendKey: (name) => sendKeyTo(selector, name), requestRender: () => {} };
+    expect(pickAdapter(selector, ctx)).toBe(piListAdapter);
+    const model = expectSelect(piListAdapter.read(selector, ctx));
+    expect(model.title).toBe("Thinking level");
+    expect(model.items.map((item) => item.label)).toEqual(["off", "low", "medium (默认)", "high"]);
+    expect(model.items.map((item) => item.current)).toEqual([false, false, false, true]);
+    expect(model.items[3].focused).toBe(true);
+
+    expect(piListAdapter.act(selector, { type: "choose", key: model.items[1].key }, ctx)).toBe(true);
+    expect(picked).toEqual(["low"]);
+    expect(saved).toEqual([]);
+
+    const fresh = new host.ThinkingSelectorComponent("high", ["off", "low", "medium", "high"],
+      (level: string) => picked.push(level), () => {}, (level: string) => saved.push(level), "medium");
+    const freshCtx: AdapterContext = { host: "pi", sendKey: (name) => sendKeyTo(fresh, name), requestRender: () => {} };
+    expect(piListAdapter.act(fresh, { type: "key", name: "dflt" }, freshCtx)).toBe(true);
+    const items = expectSelect(piListAdapter.read(fresh, freshCtx)).items;
+    expect(piListAdapter.act(fresh, { type: "choose", key: items[0].key }, freshCtx)).toBe(true);
+    expect(saved).toEqual(["off"]);
+    expect(picked).toEqual(["low"]);
   });
 });

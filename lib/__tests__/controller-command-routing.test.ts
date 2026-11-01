@@ -168,6 +168,19 @@ describe("Command routing after the mirror removal (D2)", () => {
     run.mockRestore();
   });
 
+  it.each(["/context-budget status", "/context_budget status"])("routes %s to the registered extension, never a model prompt", async text => {
+    const run = vi.spyOn(CommandGateway.prototype, "run").mockResolvedValue(true);
+    const harness = createHarness(); const handler = vi.fn(async () => undefined);
+    const lookup = vi.spyOn(harness.session.extensionRunner, "getCommand")
+      .mockImplementation(name => name === "context-budget" ? { handler } as any : undefined);
+    try {
+      await send(harness.controller, text);
+      await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+      expect(handler).toHaveBeenCalledWith("status", expect.anything());
+      expect(run).not.toHaveBeenCalled(); expect(harness.session.prompt).not.toHaveBeenCalled();
+    } finally { lookup.mockRestore(); run.mockRestore(); harness.controller.dispose(); }
+  });
+
   it("answers an unknown tg_ command with the /tg notice", async () => {
     const harness = createHarness();
 

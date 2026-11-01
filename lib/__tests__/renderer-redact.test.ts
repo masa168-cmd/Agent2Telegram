@@ -73,7 +73,7 @@ describe("assistant replies redact secrets (§4.7.4)", () => {
     expect(sent[0].richMarkdown).toContain("***");
   });
 
-  it("redacts the inline tool-call hint before it is escaped", async () => {
+  it("does not send the hidden inline tool-call hint", async () => {
     const { emit, sent } = createHarness({ tool: "brief", secrets: storeWithSecret() });
     const turn: TelegramTurn = { chatId: CHAT, queuedAttachments: [] };
 
@@ -83,12 +83,7 @@ describe("assistant replies redact secrets (§4.7.4)", () => {
       args: { command: `curl -H "Authorization: Bearer ${SECRET}" https://api.example.com` },
     }));
 
-    expect(sent.length).toBeGreaterThan(0);
-    for (const message of sent) {
-      expect(message.text).not.toContain(SECRET);
-      expect(message.text).not.toMatch(/&(amp|lt|gt)[^;]/);
-    }
-    expect(sent.some((message) => message.text.includes("***"))).toBe(true);
+    expect(sent).toEqual([]);
   });
 
   it("redacts full tool output before it becomes HTML", async () => {

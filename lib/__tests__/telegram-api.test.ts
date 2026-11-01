@@ -336,3 +336,22 @@ describe("createTelegramTransport — Rich Messages (native Markdown tables)", (
     expect(calls[1].body).toMatchObject({ parse_mode: "HTML", text: "<b>Project</b>" });
   });
 });
+describe("createTelegramTransport — persistent reply keyboard", () => {
+  afterEach(() => { vi.unstubAllGlobals(); __resetRichMessagesForTests(); });
+
+  it("attaches the input-area reply keyboard (not is_persistent) to the first chunk only and skips the rich path", async () => {
+    const bodies: Array<{ url: string; body: any }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      bodies.push({ url: String(url), body: JSON.parse(String(init?.body ?? "{}")) });
+      return telegramResponse(true, { message_id: bodies.length });
+    }));
+    const { transport } = makeTransport();
+    await transport.sendText(-100123, "x".repeat(5000), 11, undefined, "| a |", { replyKeyboard: [["/model", "/new"]] });
+    expect(bodies.every(b => b.url.endsWith("/sendMessage"))).toBe(true);
+    expect(bodies.length).toBeGreaterThan(1);
+    expect(bodies[0]!.body).toMatchObject({ message_thread_id: 11,
+      reply_markup: { keyboard: [[{ text: "/model" }, { text: "/new" }]], resize_keyboard: true } });
+    expect(bodies[0]!.body.reply_markup.is_persistent).toBeUndefined();
+    expect(bodies.slice(1).every(b => b.body.reply_markup === undefined)).toBe(true);
+  });
+});

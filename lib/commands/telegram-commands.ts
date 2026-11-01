@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { addBot, bindProjectTelegram, clearDefaultBot, findBotByIdOrName, readBotRegistry, removeBot, removeProjectBinding, setDefaultBot, unbindProjectTelegram, updateBot, updateProjectBindingLocked, readProjectBinding, readResolvedTelegramConfig, withTelegramConfigLock } from "../config.ts";
 import { escapeHtml } from "../html.ts";
 import { getTelegramBotUsername } from "../telegram-api.ts";
-import { createTelegramPairingCode, ensureTelegramPairingCode, formatPairingInstructions } from "../pairing.ts";
+import { createTelegramPairingCode, ensureTelegramPairingCode, formatPairingInstructions, isPairingCodeExpired, pairingCodeExpiry } from "../pairing.ts";
 import type { BotRecord, ResolvedTelegramConfig, TelegramConfig, TelegramTransport } from "../types.ts";
 import type { TelegramPollingRuntime } from "../polling.ts";
 import { log } from "../logger.ts";
@@ -58,7 +58,9 @@ export async function listBotsFlow(ui: MenuUi): Promise<void> {
   const lines = registry.bots.map((bot) => {
     const defaultMarker = registry.defaultBotId === bot.id ? " ⭐ default" : "";
     const username = bot.botUsername ? `@${bot.botUsername}` : "no username";
-    const paired = bot.allowedUserId !== undefined ? `paired (user ${bot.allowedUserId})` : bot.pairingCode ? `pairing: ${bot.pairingCode}` : "not paired";
+    const paired = bot.allowedUserId !== undefined ? `paired (user ${bot.allowedUserId})`
+      : bot.pairingCode && !isPairingCodeExpired({ pairingCodeExpiresAt: bot.pairingCodeExpiresAt }) ? `pairing: ${bot.pairingCode}`
+      : bot.pairingCode ? "pairing code expired" : "not paired";
     return `- ${escapeHtml(bot.name)} (${bot.id.slice(0, 8)}) · ${username} · ${paired}${defaultMarker}`;
   });
   ui.notify(`Registered bots:\n${lines.join("\n")}`, "info");
@@ -88,7 +90,7 @@ export async function addBotFlow(
     token: botToken,
     ...(botUsername === undefined ? {} : { botUsername }),
     ...(apiBase === undefined ? {} : { apiBase }),
-    ...(pairingCode === undefined ? {} : { pairingCode }),
+    ...(pairingCode === undefined ? {} : { pairingCode, pairingCodeExpiresAt: pairingCodeExpiry() }),
   };
   const updatedRegistry = await addBot(bot);
   const isDefault = updatedRegistry.defaultBotId === bot.id;
@@ -282,12 +284,13 @@ export async function regeneratePairingCodeFlow(ui: MenuUi, deps: TelegramComman
     return;
   }
   const pairingCode = createTelegramPairingCode();
-  await updateBot(bot.id, { pairingCode });
+  const pairingCodeExpiresAt = pairingCodeExpiry();
+  await updateBot(bot.id, { pairingCode, pairingCodeExpiresAt });
   if (deps.getConfig().botToken === bot.token) {
-    deps.setConfig({ ...deps.getConfig(), pairingCode });
+    deps.setConfig({ ...deps.getConfig(), pairingCode, pairingCodeExpiresAt });
     deps.refreshStatus();
   }
-  ui.notify(formatPairingInstructions({ ...bot, botToken: bot.token, pairingCode } as TelegramConfig), "info");
+  ui.notify(formatPairingInstructions({ ...bot, botToken: bot.token, pairingCode, pairingCodeExpiresAt } as TelegramConfig), "info");
 }
 
 /** Unpair the authorized Telegram user from a bot: clear allowedUserId and
@@ -304,12 +307,13 @@ export async function unpairBotFlow(ui: MenuUi, deps: TelegramCommandDeps, botId
   const confirmed = await ui.confirm("Unpair?", "This chat will stop working until you pair again with the new code.");
   if (!confirmed) return;
   const pairingCode = createTelegramPairingCode();
-  await updateBot(bot.id, { allowedUserId: undefined, pairingCode });
+  const pairingCodeExpiresAt = pairingCodeExpiry();
+  await updateBot(bot.id, { allowedUserId: undefined, pairingCode, pairingCodeExpiresAt });
   if (deps.getConfig().botToken === bot.token) {
-    deps.setConfig({ ...deps.getConfig(), allowedUserId: undefined, pairingCode });
+    deps.setConfig({ ...deps.getConfig(), allowedUserId: undefined, pairingCode, pairingCodeExpiresAt });
     deps.refreshStatus();
   }
-  ui.notify(formatPairingInstructions({ ...bot, botToken: bot.token, allowedUserId: undefined, pairingCode } as TelegramConfig), "info");
+  ui.notify(formatPairingInstructions({ ...bot, botToken: bot.token, allowedUserId: undefined, pairingCode, pairingCodeExpiresAt } as TelegramConfig), "info");
 }
 
 export async function bindProjectFlow(
@@ -360,7 +364,7 @@ export async function bindProjectFlow(
   deps.switchResolvedConfig(await bindProjectTelegram(workspacePath, bot.id));
   const config = ensureTelegramPairingCode(deps.getConfig());
   if (config !== deps.getConfig()) {
-    await updateBot(bot.id, { ...(config.pairingCode !== undefined ? { pairingCode: config.pairingCode } : {}) });
+    await updateBot(bot.id, { ...(config.pairingCode !== undefined ? { pairingCode: config.pairingCode, pairingCodeExpiresAt: config.pairingCodeExpiresAt } : {}) });
   }
   deps.getPolling().start();
   await deps.syncTelegramCommands();

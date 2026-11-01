@@ -1,6 +1,6 @@
 import type { AnyModel, Api, Model, Provider } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, SettingsManager } from "@earendil-works/pi-coding-agent";
-import type { CapturedAgentSession } from "../types.ts";
+import type { CapturedAgentSession } from "../captured-session.ts";
 import { readBudget, validateBudget, type ModelBudget } from "./config.ts";
 
 const keyOf = (model: { provider: string; id: string }) => `${model.provider}/${model.id}`;

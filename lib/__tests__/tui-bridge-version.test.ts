@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTelegramController } from "../controller.ts";
-import type { CapturedAgentSession, TelegramTransport } from "../types.ts";
+import type { TelegramTransport } from "../types.ts";
+import type { CapturedAgentSession } from "../captured-session.ts";
 import type { TuiBridgeAdapter } from "../tui-bridge.ts";
 
 // §0.1 version gate: the bridge reads both host versions at install time and

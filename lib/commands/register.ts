@@ -1,4 +1,5 @@
-import type { CapturedAgentSession, TelegramTransport, TelegramTurn } from "../types.ts";
+import type { TelegramTransport, TelegramTurn } from "../types.ts";
+import type { CapturedAgentSession } from "../captured-session.ts";
 import { registerSessionCommands } from "./session.ts";
 import { registerInfoCommands } from "./info.ts";
 import { registerLifecycleCommands } from "./lifecycle.ts";

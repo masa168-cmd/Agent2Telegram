@@ -3,7 +3,8 @@ import { createTelegramController } from "../controller.ts";
 import { CommandGateway } from "../tui/gateway.ts";
 import { DialogBroker } from "../tui/broker.ts";
 import type { DialogSession } from "../tui/model.ts";
-import type { CapturedAgentSession, TelegramTransport } from "../types.ts";
+import type { TelegramTransport } from "../types.ts";
+import type { CapturedAgentSession } from "../captured-session.ts";
 import type { TuiBridgeAdapter } from "../tui-bridge.ts";
 
 type Call = { method: string; text?: string; messageId?: number; queryId?: string };

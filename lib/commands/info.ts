@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs";
 import type { CommandRegistry } from "./register.ts";
 import { escapeHtml } from "../html.ts";
-import type { CapturedAgentSession, TelegramTransport, TelegramTurn } from "../types.ts";
+import type { TelegramTransport, TelegramTurn } from "../types.ts";
+import type { CapturedAgentSession } from "../captured-session.ts";
 
 function formatFooterLikeTokenCount(value: number): string {
   if (value < 1_000) return value.toString();

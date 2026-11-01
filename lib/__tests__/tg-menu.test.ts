@@ -23,7 +23,7 @@ import { buildConfigMenuOptions, registerTgMenuCommand, type SwitchInstanceDeps 
 import type { TelegramCommandDeps, TelegramConnectionState } from "../commands/telegram-commands.ts";
 import type { TgConfigDeps } from "../commands/register.ts";
 import { readBotRegistry, readProjectBinding, addBot, writeProjectBinding, clearDefaultBot } from "../config.ts";
-import type { CapturedAgentSession } from "../types.ts";
+import type { CapturedAgentSession } from "../captured-session.ts";
 import type { BotRecord, ResolvedTelegramConfig, TelegramConfig } from "../types.ts";
 import type * as pairingModule from "../pairing.ts";
 import { runWithTelegramTurn } from "../turn-context.ts";

@@ -33,8 +33,8 @@
  */
 
 import { appendFile, mkdir, readdir, rename, stat } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { getAgentDir } from "./data-dir.ts";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 export type LogFields = Record<string, unknown>;
@@ -65,12 +65,9 @@ interface LoggerConfig {
   enabled: boolean;
 }
 
-/** Default log directory: mirrors config.getAgentDir() without importing it (avoid a cycle). */
+/** Default log directory: `<data dir>/logs` (see data-dir.ts). */
 function defaultLogDir(): string {
-  const agentDir = process.env.PI_CODING_AGENT_DIR
-    ? resolve(process.env.PI_CODING_AGENT_DIR)
-    : join(homedir(), ".pi", "agent");
-  return join(agentDir, "logs");
+  return join(getAgentDir(), "logs");
 }
 
 function todayStamp(d = new Date()): string {

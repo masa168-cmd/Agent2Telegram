@@ -2,7 +2,6 @@ import type { ExtensionCommandContext, ExtensionUIContext } from "@earendil-work
 import { DIALOG_CALLBACK_PREFIX, MENU_ALL_CALLBACK_PREFIX, decodeDialogCallback, decodeMoreCallback, decodeRunCallback, decodeUiCallback, encodeMoreCallback, encodeRunCallback } from "./callback-protocol.ts";
 import { parseLeadingCommand, normalizeLeadingCommand } from "./command-parser.ts";
 import type {
-  CapturedAgentSession,
   TelegramBashConfirm,
   TelegramButton,
   TelegramCallbackQuery,
@@ -13,6 +12,7 @@ import type {
   TelegramTransport,
   TelegramTurn,
 } from "./types.ts";
+import type { CapturedAgentSession } from "./captured-session.ts";
 import type { TelegramUiRuntime } from "./telegram-ui.ts";
 import type { TuiBridgeAdapter } from "./tui-bridge.ts";
 import { tuiBridge as defaultTuiBridge, hostOwnsPrompts } from "./tui-bridge.ts";

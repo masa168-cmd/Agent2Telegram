@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildStatusSnapshot, formatDebugReport, registerInfoCommands } from "../commands/info.ts";
-import type { CapturedAgentSession, TelegramSentMessage, TelegramTransport } from "../types.ts";
+import type { TelegramSentMessage, TelegramTransport } from "../types.ts";
+import type { CapturedAgentSession } from "../captured-session.ts";
 
 function makeSession(overrides: Partial<{
   cwd: string;

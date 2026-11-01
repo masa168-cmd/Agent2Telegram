@@ -1,20 +1,16 @@
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { BotRecord, BotRegistry, ProjectTelegramBinding, ResolvedTelegramConfig, TelegramConfig, TelegramRenderLevel } from "./types.ts";
 import { log } from "./logger.ts";
+import { getAgentDir } from "./data-dir.ts";
 
 const configLog = log.child("config");
 
 let legacyTuiBridgeWarned = false;
 
-export function getAgentDir(): string {
-  return process.env.PI_CODING_AGENT_DIR
-    ? resolve(process.env.PI_CODING_AGENT_DIR)
-    : join(homedir(), ".pi", "agent");
-}
+export { getAgentDir, setTelegramDataDir } from "./data-dir.ts";
 
 export function getTelegramConfigPath(): string {
   return join(getAgentDir(), "tg.json");

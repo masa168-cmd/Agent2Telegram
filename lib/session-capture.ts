@@ -60,7 +60,7 @@
 
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { log } from "./logger.ts";
-import type { CapturedAgentSession } from "./types.ts";
+import type { CapturedAgentSession } from "./captured-session.ts";
 
 const sessionCaptureLog = log.child("session-capture");
 

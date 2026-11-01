@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { clipScreen, createTelegramController, type TelegramController } from "../controller.ts";
 import { CommandGateway } from "../tui/gateway.ts";
-import type { CapturedAgentSession, TelegramTransport } from "../types.ts";
+import type { TelegramTransport } from "../types.ts";
+import type { CapturedAgentSession } from "../captured-session.ts";
 import { hostOwnsPrompts, type TuiBridgeAdapter } from "../tui-bridge.ts";
 
 type Call = { method: string; text?: string; messageId?: number; rows?: unknown };

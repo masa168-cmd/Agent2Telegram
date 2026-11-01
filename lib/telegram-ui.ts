@@ -4,7 +4,8 @@ import { escapeHtml } from "./html.ts";
 import { isCredentialTitle } from "./forum-policy.ts";
 import { log } from "./logger.ts";
 import type { SecretStore } from "./tui/secrets.ts";
-import type { CapturedAgentSession, PendingInputResolver, TelegramTransport } from "./types.ts";
+import type { PendingInputResolver, TelegramTransport } from "./types.ts";
+import type { CapturedAgentSession } from "./captured-session.ts";
 
 const MAX_BUTTON_TEXT = 60;
 const PAGE_SIZE = 10;

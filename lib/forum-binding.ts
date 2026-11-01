@@ -1,4 +1,6 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+/** Structural subsets of Pi's ExtensionAPI / ExtensionContext, so this module stays agent-neutral. */
+type EntryAppender = { appendEntry(customType: string, data?: unknown): void };
+type SessionEntries = { sessionManager: { getSessionId(): string; getEntries(): readonly unknown[] } };
 
 /** Session-wide extension metadata, never model context or a Telegram token. */
 export const FORUM_BINDING_TYPE = "pi-telegram-plus-ex.forum-binding";
@@ -52,8 +54,8 @@ export function readForumBinding(
 
 /** Pi flushes a blank session's custom entries with its first conversation message. */
 export function appendForumBinding(
-  pi: Pick<ExtensionAPI, "appendEntry">,
-  ctx: Pick<ExtensionContext, "sessionManager">,
+  pi: EntryAppender,
+  ctx: SessionEntries,
   binding: ForumBinding,
 ): void {
   const b = parseForumBinding(binding);

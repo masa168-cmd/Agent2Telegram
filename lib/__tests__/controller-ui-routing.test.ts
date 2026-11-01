@@ -4,7 +4,8 @@ import { createTelegramController } from "../controller.ts";
 import type { TelegramCommandHandler } from "../controller.ts";
 import { isRoutedUi, setRunnerUiContext } from "../pi-compat.ts";
 import { createTelegramUiRuntime } from "../telegram-ui.ts";
-import type { CapturedAgentSession, TelegramTransport } from "../types.ts";
+import type { TelegramTransport } from "../types.ts";
+import type { CapturedAgentSession } from "../captured-session.ts";
 import type { TuiBridgeAdapter } from "../tui-bridge.ts";
 
 function createTransport(sent: Array<{ chatId: number; text: string; rows?: Array<Array<{ text: string; value: string }>>; messageThreadId?: number; replyToMessageId?: number; message_id?: number }>): TelegramTransport {

@@ -1,5 +1,3 @@
-import type { AgentSession, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-
 export type TelegramRenderLevel = "hidden" | "brief" | "full";
 
 export const RENDER_LEVELS: readonly TelegramRenderLevel[] = ["hidden", "brief", "full"] as const;
@@ -214,11 +212,4 @@ export type TelegramTransport = {
   sendDocument(chatId: number, path: string, caption?: string, signal?: AbortSignal, messageThreadId?: number, replyToMessageId?: number): Promise<void>;
   sendPhoto(chatId: number, data: string, caption?: string, isPath?: boolean, signal?: AbortSignal, messageThreadId?: number, replyToMessageId?: number): Promise<void>;
   sendChatAction(chatId: number, action: string, messageThreadId?: number): Promise<void>;
-};
-
-export type CapturedAgentSession = AgentSession & {
-  extensionRunner: AgentSession["extensionRunner"] & {
-    getUIContext(): ExtensionUIContext;
-    setUIContext(ui?: ExtensionUIContext): void;
-  };
 };

@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import { createTelegramController } from "../controller.ts";
-import type { CapturedAgentSession, TelegramTransport } from "../types.ts";
+import type { TelegramTransport } from "../types.ts";
+import type { CapturedAgentSession } from "../captured-session.ts";
 import {
   buildTelegramMenuCommands,
   buildTelegramMenuCommandsFull,

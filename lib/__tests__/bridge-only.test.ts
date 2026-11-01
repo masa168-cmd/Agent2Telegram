@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { addBot, resolveTelegramConfig } from "../config.ts";
 import type { BotRecord } from "../types.ts";
 import { createTelegramController } from "../controller.ts";
-import type { CapturedAgentSession, TelegramTransport } from "../types.ts";
+import type { TelegramTransport } from "../types.ts";
+import type { CapturedAgentSession } from "../captured-session.ts";
 import type { TuiBridgeAdapter } from "../tui-bridge.ts";
 
 // v6 (decision 48): the host bridge is the only path. These tests pin the two

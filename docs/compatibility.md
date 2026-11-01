@@ -62,9 +62,9 @@ npm run check:offline
 | 助手正文流式 | `forum-streaming.test.ts` | token 路径不等待 Bot IO，1 秒限频、600 Unicode 字符预览、完整最终替换/长结果发送、secret-store 脱敏、旧消息不迁移到新代次；不证明真实网络的延迟或限流体验 |
 | UI 与敏感边界 | `forum-controller.test.ts`、`tui-broker.test.ts`、`tg-menu.test.ts` 等 | 非敏感本地/远程交互、先回答者生效、旧回调、禁止群 Shell、登录留 SSH、分享/退出确认及在线话题链接；不证明任意第三方 custom TUI 可读或安全 |
 | 上下文预算 | 上述 `context-budget-*.test.ts` 及命令/论坛入口测试 | 精确窗口/阈值与实例级方法恢复、普通设置保存后保持、持久数据和授权回归；不证明原生 TUI/真实 Telegram、账号容量或实际长输入 |
-| 上游回归 | 其他 `lib/__tests__/*.test.ts` | 原有命令、队列、渲染、Markdown、TUI adapters 等模块回归；其中 OMP mock 用例通过不转化为本 fork 的 OMP 支持承诺 |
+| 上游回归 | 其他 `lib/core/__tests__/*.test.ts`、`lib/pi/__tests__/*.test.ts` | 原有命令、队列、渲染、Markdown、TUI adapters 等模块回归；其中 OMP mock 用例通过不转化为本 fork 的 OMP 支持承诺 |
 
-所有测试路径相对 `lib/__tests__/`。测试 ACK、状态计数和 mock 断言只表示对应离线层级通过，不包装成“手机已验证”。
+测试位于 `lib/core/__tests__/`（与 Agent 无关）和 `lib/pi/__tests__/`（Pi 专用）。测试 ACK、状态计数和 mock 断言只表示对应离线层级通过，不包装成“手机已验证”。
 
 ## UI 与秘密的限制
 

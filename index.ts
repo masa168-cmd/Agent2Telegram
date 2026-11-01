@@ -3,41 +3,41 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, extname, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createActiveTelegramTransport } from "./lib/active-transport.ts";
-import { registerTelegramAttachmentTool } from "./lib/attachments.ts";
-import { enableConfiguredTelegramOnStartup, readResolvedTelegramConfig, persistProjectRuntimeState, resetProjectBindingCursor, updateBot, getAgentDir } from "./lib/config.ts";
-import { createTelegramController, type TelegramCommandHandler } from "./lib/controller.ts";
-import { escapeHtml } from "./lib/html.ts";
-import { createHeartbeat } from "./lib/heartbeat.ts";
-import { replayTelegramHistory, type TelegramHistoryEntry } from "./lib/history-replay.ts";
-import { TelegramInstanceCoordinator, failoverHasOtherLiveInstances, telegramTokenHash, type TelegramActiveInstance, type TelegramInstanceMetadata } from "./lib/instance-coordinator.ts";
-import { mainOnlyEvents } from "./lib/main-only-pi.ts";
-import { registerTelegramRenderer } from "./lib/renderer.ts";
-import { getActiveSession, installAgentSessionCapture } from "./lib/session-capture.ts";
-import { createTelegramTransport, downloadTelegramFile, getTelegramBotUsername, getTelegramFile } from "./lib/telegram-api.ts";
-import { createTelegramUiRuntime } from "./lib/telegram-ui.ts";
-import { formatTelegramStatusLine, clearTelegramStatus, TELEGRAM_STATUS_KEY } from "./lib/status.ts";
-import { installTelegramStatusAlignment } from "./lib/status-footer.ts";
-import { createTelegramPollingRuntime, checkpointCurrentUpdateCursor } from "./lib/polling.ts";
-import { ForumSession, forumBotId } from "./lib/forum-session.ts";
-import { createForumTelegramTransport } from "./lib/forum-transport.ts";
-import { authorizedForumUpdate, deliverForumUpdate, findForumRoute } from "./lib/forum-router.ts";
-import { forumTopicLink, sameForumTarget } from "./lib/forum-binding.ts";
-import { PollingNoticeGate, classifyPollingError } from "./lib/polling-notice.ts";
-import { deliverPendingNotices } from "./lib/pending-notices.ts";
-import { initLogger, log, type LogLevel } from "./lib/logger.ts";
-import { authorizeTelegramUser, ensureTelegramPairingCode, formatPairingInstructions } from "./lib/pairing.ts";
-import { getCurrentTelegramTurn } from "./lib/turn-context.ts";
+import { createActiveTelegramTransport } from "./lib/core/active-transport.ts";
+import { registerTelegramAttachmentTool } from "./lib/pi/attachments.ts";
+import { enableConfiguredTelegramOnStartup, readResolvedTelegramConfig, persistProjectRuntimeState, resetProjectBindingCursor, updateBot, getAgentDir } from "./lib/core/config.ts";
+import { createTelegramController, type TelegramCommandHandler } from "./lib/pi/controller.ts";
+import { escapeHtml } from "./lib/core/html.ts";
+import { createHeartbeat } from "./lib/core/heartbeat.ts";
+import { replayTelegramHistory, type TelegramHistoryEntry } from "./lib/pi/history-replay.ts";
+import { TelegramInstanceCoordinator, failoverHasOtherLiveInstances, telegramTokenHash, type TelegramActiveInstance, type TelegramInstanceMetadata } from "./lib/core/instance-coordinator.ts";
+import { mainOnlyEvents } from "./lib/pi/main-only-pi.ts";
+import { registerTelegramRenderer } from "./lib/pi/renderer.ts";
+import { getActiveSession, installAgentSessionCapture } from "./lib/pi/session-capture.ts";
+import { createTelegramTransport, downloadTelegramFile, getTelegramBotUsername, getTelegramFile } from "./lib/core/telegram-api.ts";
+import { createTelegramUiRuntime } from "./lib/pi/telegram-ui.ts";
+import { formatTelegramStatusLine, clearTelegramStatus, TELEGRAM_STATUS_KEY } from "./lib/core/status.ts";
+import { installTelegramStatusAlignment } from "./lib/pi/status-footer.ts";
+import { createTelegramPollingRuntime, checkpointCurrentUpdateCursor } from "./lib/core/polling.ts";
+import { ForumSession, forumBotId } from "./lib/pi/forum-session.ts";
+import { createForumTelegramTransport } from "./lib/pi/forum-transport.ts";
+import { authorizedForumUpdate, deliverForumUpdate, findForumRoute } from "./lib/core/forum-router.ts";
+import { forumTopicLink, sameForumTarget } from "./lib/core/forum-binding.ts";
+import { PollingNoticeGate, classifyPollingError } from "./lib/core/polling-notice.ts";
+import { deliverPendingNotices } from "./lib/core/pending-notices.ts";
+import { initLogger, log, type LogLevel } from "./lib/core/logger.ts";
+import { authorizeTelegramUser, ensureTelegramPairingCode, formatPairingInstructions } from "./lib/core/pairing.ts";
+import { getCurrentTelegramTurn } from "./lib/core/turn-context.ts";
 
-import { registerAllCommands } from "./lib/commands/register.ts";
-import { registerTgMenuCommand } from "./lib/commands/tg-menu.ts";
-import { registerContextBudgetCommand } from "./lib/commands/context-budget.ts";
-import { ContextBudgetRuntime } from "./lib/context-budget/runtime.ts";
-import type { TelegramConnectionState } from "./lib/commands/telegram-commands.ts";
-import { syncTelegramCommands, scheduleTelegramCommandRefresh, cancelTelegramCommandRefreshes, getTelegramCommandKeyboard } from "./lib/menu-commands.ts";
-import { installTuiBridge, tuiBridge, getTuiCommands } from "./lib/tui-bridge.ts";
-import { SecretStore } from "./lib/tui/secrets.ts";
-import type { ResolvedTelegramConfig, TelegramConfig, TelegramTurn } from "./lib/types.ts";
+import { registerAllCommands } from "./lib/pi/commands/register.ts";
+import { registerTgMenuCommand } from "./lib/pi/commands/tg-menu.ts";
+import { registerContextBudgetCommand } from "./lib/pi/commands/context-budget.ts";
+import { ContextBudgetRuntime } from "./lib/pi/context-budget/runtime.ts";
+import type { TelegramConnectionState } from "./lib/pi/commands/telegram-commands.ts";
+import { syncTelegramCommands, scheduleTelegramCommandRefresh, cancelTelegramCommandRefreshes, getTelegramCommandKeyboard } from "./lib/pi/menu-commands.ts";
+import { installTuiBridge, tuiBridge, getTuiCommands } from "./lib/pi/tui-bridge.ts";
+import { SecretStore } from "./lib/pi/tui/secrets.ts";
+import type { ResolvedTelegramConfig, TelegramConfig, TelegramTurn } from "./lib/core/types.ts";
 
 const indexLog = log.child("index");
 
@@ -75,7 +75,7 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
   void installTuiBridge();
   // Initialize file logging first, before any subsystem can emit. Log directory
   // lives under the pi agent cache dir alongside tg.json; level is overridable
-  // via PI_TELEGRAM_PLUS_LOG_LEVEL (debug/info/warn/error). See lib/logger.ts.
+  // via PI_TELEGRAM_PLUS_LOG_LEVEL (debug/info/warn/error). See lib/core/logger.ts.
   const envLevel = process.env.PI_TELEGRAM_PLUS_LOG_LEVEL?.toLowerCase();
   const level: LogLevel = (envLevel === "debug" || envLevel === "info" || envLevel === "warn" || envLevel === "error")
     ? envLevel

@@ -3,7 +3,7 @@
 > Fork note: the upstream log filenames and `PI_TELEGRAM_PLUS_LOG_LEVEL` are intentionally preserved. The historical implementation notes below are not a verification claim for this fork. Logs may contain work content; inspect through SSH and do not upload them to GitHub or public chats.
 
 Design and implementation notes for the extension's file-based logging system.
-Implemented in [`lib/logger.ts`](../lib/logger.ts); wired up in
+Implemented in [`lib/core/logger.ts`](../lib/core/logger.ts); wired up in
 [`index.ts`](../index.ts) at activation.
 
 ## 1. Why
@@ -138,12 +138,12 @@ recovery and are not "silent" per the objective's definition
 
 ## 9. Testing
 
-`lib/__tests__/logger.test.ts` covers: JSON Lines schema & scope nesting, level
+`lib/core/__tests__/logger.test.ts` covers: JSON Lines schema & scope nesting, level
 filtering, Error serialization, unserializable-field downgrade, logrotate-style
 rotation (base file stays under cap, `.1` suffix appears), no-throw degradation
 on an unwritable dir, and accessor reflection.
 
-`lib/__tests__/telegram-api.test.ts` was updated to assert the warn now lands in
+`lib/core/__tests__/telegram-api.test.ts` was updated to assert the warn now lands in
 the log file (not `console.warn`) and to enforce the no-console invariant.
 
 ## 10. Out of scope

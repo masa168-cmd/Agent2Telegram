@@ -19,8 +19,8 @@
   "files": [
     "index.ts",
     "lib/**/*.ts",
-    "lib/restart-helper.mjs",
-    "!lib/__tests__/",
+    "lib/pi/restart-helper.mjs",
+    "!lib/**/__tests__/",
     "CHANGELOG.md",
     "docs/compatibility.md",
     "docs/logging.md",

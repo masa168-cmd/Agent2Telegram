@@ -9,9 +9,9 @@ import { a2tHome, agentDataDir } from "../core/a2t-home.ts";
 import { getProjectBindingPath, legacyProjectBindingPath, writeProjectBinding } from "../core/config.ts";
 import { setTelegramDataDir } from "../core/data-dir.ts";
 import type { ProjectTelegramBinding } from "../core/types.ts";
-import { enableClaudeProject, isClaudeProjectEnabled } from "../claude/gateway/projects.ts";
+import { enableClaudeProject, isClaudeProjectEnabled } from "../gateway/claude-projects.ts";
 import { LEGACY_PI_ENTRY_FILES, enablePi } from "./pi-entry.ts";
-import { GATEWAY_SERVICE, LEGACY_GATEWAY_SERVICE } from "./service.ts";
+import { GATEWAY_SERVICE, LEGACY_GATEWAY_SERVICES } from "./service.ts";
 
 export type MigrateStep =
   | { kind: "move"; from: string; to: string }
@@ -152,7 +152,7 @@ export async function runMigrate(options: MigrateOptions): Promise<number> {
 
   const home = options.home ?? homedir();
   const pis = livePis(join(home, ".pi", "agent", "tg-runtime"), options.isPidAlive ?? alive);
-  const active = [GATEWAY_SERVICE, LEGACY_GATEWAY_SERVICE].filter(options.isServiceActive ?? serviceActive);
+  const active = [GATEWAY_SERVICE, ...LEGACY_GATEWAY_SERVICES].filter(options.isServiceActive ?? serviceActive);
   if (pis.length > 0 || active.length > 0) {
     log(`未执行：请先停止正在运行的${pis.length ? ` Pi（进程 ${pis.join(", ")}）` : ""}${active.length ? ` 网关服务（${active.join(", ")}）` : ""}，再运行 a2t migrate --apply。`);
     return 1;

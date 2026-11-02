@@ -88,7 +88,7 @@ describe("Telegram management flows (bot registry + project binding)", () => {
       },
       isTelegramEnabled: () => config.telegramEnabled === true,
       transport: {} as unknown as TelegramCommandDeps["transport"], // flows never send in these tests
-      getPolling: () => ({
+      getConnection: () => ({
         start: () => { pollingActive = true; pollingCalls.push("start"); },
         stop: async () => { pollingActive = false; pollingCalls.push("stop"); },
         isActive: () => pollingActive,

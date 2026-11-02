@@ -1,13 +1,11 @@
 import type { TgConfigDeps } from "./register.ts";
-import type { TelegramBashConfirm, TelegramConfig, TelegramRenderLevel } from "../../core/types.ts";
-import { BASH_CONFIRM_MODES, RENDER_LEVELS } from "../../core/types.ts";
+import type { TelegramConfig, TelegramRenderLevel } from "../../core/types.ts";
+import { RENDER_LEVELS } from "../../core/types.ts";
 import type { MenuUi } from "./telegram-commands.ts";
 
 const KEY_LABELS: Record<string, string> = {
   tool: "🔧 Tool rendering",
-  thinking: "💭 Thinking rendering",
   retry: "🔄 Retry count",
-  bash: "🐚 Shell confirm",
 };
 
 // ── Reusable config flow functions (used by the /tg Config submenu) ───────
@@ -35,29 +33,6 @@ export async function configToolFlow(
   ui.notify(`${KEY_LABELS.tool} set to ${selectedValue}`, "info");
 }
 
-export async function configThinkingFlow(
-  ui: MenuUi,
-  deps: TgConfigDeps,
-  value?: string,
-): Promise<void> {
-  const config = deps.getConfig();
-  const current = config.thinking ?? "brief";
-  let selectedValue: TelegramRenderLevel | undefined;
-  if (value && (RENDER_LEVELS as readonly string[]).includes(value)) {
-    selectedValue = value as TelegramRenderLevel;
-  } else if (!value) {
-    selectedValue = await pickRenderLevel(ui, KEY_LABELS.thinking, current);
-  } else {
-    ui.notify("Invalid. Use: hidden, brief, or full", "error");
-    return;
-  }
-  if (!selectedValue) return;
-  const next: TelegramConfig = { ...config, thinking: selectedValue };
-  deps.setConfig(next);
-  await deps.persistConfig(next);
-  ui.notify(`${KEY_LABELS.thinking} set to ${selectedValue}`, "info");
-}
-
 export async function configRetryFlow(
   ui: MenuUi,
   deps: TgConfigDeps,
@@ -76,33 +51,6 @@ export async function configRetryFlow(
   deps.setConfig(next);
   await deps.persistConfig(next);
   ui.notify(`${KEY_LABELS.retry} set to ${n}`, "info");
-}
-
-export async function configBashFlow(
-  ui: MenuUi,
-  deps: TgConfigDeps,
-  value?: string,
-): Promise<void> {
-  const config = deps.getConfig();
-  const current = config.bashConfirm ?? "dangerous";
-  let selected: TelegramBashConfirm | undefined;
-  if (value && (BASH_CONFIRM_MODES as readonly string[]).includes(value)) {
-    selected = value as TelegramBashConfirm;
-  } else if (!value) {
-    const labels = [...BASH_CONFIRM_MODES].map((mode) => (mode === current ? `● ${mode}` : `  ${mode}`));
-    const choice = await ui.select(KEY_LABELS.bash, labels);
-    if (!choice) return;
-    const index = labels.indexOf(choice);
-    if (index >= 0) selected = BASH_CONFIRM_MODES[index];
-  } else {
-    ui.notify("Invalid. Use: always, dangerous, or never", "error");
-    return;
-  }
-  if (!selected) return;
-  const next: TelegramConfig = { ...config, bashConfirm: selected };
-  deps.setConfig(next);
-  await deps.persistConfig(next);
-  ui.notify(`${KEY_LABELS.bash} set to ${selected}`, "info");
 }
 
 async function pickRenderLevel(ui: MenuUi, title: string, current: TelegramRenderLevel): Promise<TelegramRenderLevel | undefined> {

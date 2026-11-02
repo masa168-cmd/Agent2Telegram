@@ -55,8 +55,7 @@ export async function runSetup(agent: SetupAgent, dataDir: string): Promise<numb
     await addBot(bot);
     await setDefaultBot(bot.id);
     console.log(`已保存 @${botUsername}。请确认 Bot 已是论坛群管理员，并有「管理话题」权限。`);
-    if (agent === "claude") console.log("下一步：a2t gateway restart，然后在项目目录运行 a2t enable claude。");
-    else console.log("下一步：在项目目录运行 a2t enable pi，然后在该目录启动 pi。");
+    console.log(`下一步：a2t gateway restart，然后在项目目录运行 a2t enable ${agent}${agent === "pi" ? "，再在该目录启动 pi" : ""}。`);
     if (allowedUserId === undefined) console.log(formatPairingInstructions({ ...bot, botToken: token }));
     return 0;
   } finally {

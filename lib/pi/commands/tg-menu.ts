@@ -1,18 +1,14 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { randomUUID } from "node:crypto";
 import { forumTopicLink } from "../../core/forum-binding.ts";
-import { validForumRegistration } from "../../core/forum-router.ts";
 import { basename } from "node:path";
 import { readBotRegistry, readProjectBinding } from "../../core/config.ts";
-import type { TelegramInstanceMetadata } from "../../core/instance-coordinator.ts";
-import type { TelegramInstanceCoordinator } from "../../core/instance-coordinator.ts";
 import type { MenuUi, TelegramCommandDeps, TelegramConnectionState } from "./telegram-commands.ts";
 import type { TgConfigDeps, SessionDeps } from "./register.ts";
 import type { BotRecord, BotRegistry, TelegramConfig } from "../../core/types.ts";
 import type { CapturedAgentSession } from "../captured-session.ts";
 import { currentHostName } from "../tui/host.ts";
 import type { TuiHost } from "../tui-bridge.ts";
-import { configToolFlow, configThinkingFlow, configRetryFlow, configBashFlow } from "./tg-config.ts";
+import { configToolFlow, configRetryFlow } from "./tg-config.ts";
 import { formatPairingInstructions } from "../../core/pairing.ts";
 import { getCurrentTelegramTurn } from "../../core/turn-context.ts";
 import { formatDebugReport } from "./info.ts";
@@ -24,20 +20,9 @@ import {
   setBotDefaultFlow,
   updateBotFlow,
   removeBotFlow,
-  bindProjectFlow,
   enableProjectFlow,
   disableProjectFlow,
-  unbindProjectFlow,
 } from "./telegram-commands.ts";
-
-/** Format a live instance for display in the switch selector. */
-export function formatInstanceChoice(instance: TelegramInstanceMetadata, activeId: string): string {
-  const marker = instance.id === activeId ? "✓" : " ";
-  const project = (basename(instance.cwd) || instance.cwd).slice(0, 28);
-  const session = (instance.sessionName || instance.sessionId?.slice(0, 8) || "session").slice(0, 24);
-  const model = (instance.model || "no-model").slice(0, 36);
-  return `${marker} ${project} · ${session} · ${model} · ${instance.id.slice(0, 8)}`;
-}
 
 // ── Menu option labels ─────────────────────────────────────────────────────
 
@@ -46,7 +31,7 @@ const MAIN_MENU_OPTIONS = [
   "📁 Project",
   "⌨️ Commands",
   "⚙️ Config",
-  "🔄 Switch instance",
+  "🧵 Online sessions",
   "🛠 Debug info",
   "❌ Close",
 ] as const;
@@ -64,7 +49,6 @@ const PAIRING_ACTION_NEW_CODE = "New pairing code";
 
 const CONFIG_MENU_PREFIX = "⚙️ Telegram Config";
 const BACK_LABEL = "⬅️ Back";
-const UNBIND_LABEL = "Unbind";
 
 /** Format a registered bot for display in bot-list / pickers. */
 function formatBotLabel(bot: BotRecord, registry: BotRegistry): string {
@@ -96,15 +80,9 @@ export type CommandMenuDeps = {
 };
 
 export type SwitchInstanceDeps = {
-  getCoordinator: () => TelegramInstanceCoordinator | undefined;
-  getCurrentChatId: () => number | undefined;
-  stopPolling: () => Promise<void>;
-  startPolling: () => void;
-  requestReconcile: () => void;
-  getCurrentTurn: () => { chatId: number; messageThreadId?: number; sourceMessageId?: number } | undefined;
-  /** Shared handoff gate (same Set used by isActiveInstance) so a
-   *  menu-triggered switch blocks outbound sends during the handoff. */
-  pendingHandoffs: Set<string>;
+  /** The online sessions of this Bot, from the agent2telegram gateway. */
+  listSessions: () => Promise<Array<{ cwd: string; threadId?: number; sessionId?: string; pid?: number }>>;
+  getForumChatId: () => number | undefined;
 };
 
 // ── Menu registration ──────────────────────────────────────────────────────
@@ -164,8 +142,7 @@ async function mainMenu(
   const forumMode = deps.getConfig().forumChatId !== undefined;
   const options: string[] = MAIN_MENU_OPTIONS
     .filter(option => (commandDeps || option !== "⌨️ Commands")
-      && (!forumMode || !telegramOrigin || (option !== "🤖 Bots" && option !== "📁 Project")))
-    .map(option => forumMode && option === "🔄 Switch instance" ? "🧵 Online sessions" : option);
+      && (!forumMode || !telegramOrigin || (option !== "🤖 Bots" && option !== "📁 Project")));
   while (true) {
     const choice = await pick(ui, "Telegram Management", options);
     if (!choice || choice === "❌ Close") return;
@@ -186,7 +163,7 @@ async function mainMenu(
     } else if (choice === "⚙️ Config") {
       if (await configMenu(ui, configDeps, sessionDeps)) continue;
       return;
-    } else if (choice === "🔄 Switch instance" || choice === "🧵 Online sessions") {
+    } else if (choice === "🧵 Online sessions") {
       if (await switchInstanceMenu(ui, switchDeps, deps.getConfig().forumChatId)) continue;
       return;
     } else if (choice === "🛠 Debug info") {
@@ -364,7 +341,6 @@ async function pairingMenu(ui: MenuUi, deps: TelegramCommandDeps, bot: BotRecord
 function connectionChoice(state: TelegramConnectionState): string {
   if (state === "connected") return "🟢 Connected → Disconnect";
   if (state === "connecting") return "🔄 Connecting → Disconnect";
-  if (state === "other-instance") return "🟡 In use by another instance";
   return "⚪ Disconnected → Connect";
 }
 
@@ -394,24 +370,12 @@ async function projectMenu(ui: MenuUi, deps: TelegramCommandDeps, cwd: string): 
     if (!choice || choice === BACK_LABEL) return true; // back to main
 
     if (choice === botLabel) {
-      if (registry.bots.length === 0) {
-        ui.notify("No bots registered. Use /tg → Bots → Add bot first.", "info");
-        continue;
-      }
-      const choices = registry.bots.map((b) => formatBotLabel(b, registry));
-      // Unbind only makes sense for projects whose binding has a botId.
-      const selected = await pick(ui, "Bind project to bot", [...choices, ...(boundBotId ? [UNBIND_LABEL] : []), BACK_LABEL]);
-      if (!selected || selected === BACK_LABEL) continue;
-      if (selected === UNBIND_LABEL) {
-        await unbindProjectFlow(ui, deps, cwd);
-      } else {
-        const bot = registry.bots[choices.indexOf(selected)];
-        if (bot) await bindProjectFlow(ui, deps, cwd, bot.id);
-      }
+      // Each agent has one Bot (its default) and the gateway polls it.
+      ui.notify(effectiveBot
+        ? "每个 Agent 只用自己的默认 Bot；更换 Bot 请在终端运行 a2t setup pi，然后 a2t gateway restart。"
+        : "还没有配置 Bot：在终端运行 a2t setup pi。", "info");
     } else if (choice === connectLabel) {
-      if (connection === "other-instance") {
-        ui.notify("Another pi instance is serving this bot", "info");
-      } else if (connection === "disconnected") {
+      if (connection === "disconnected") {
         // flow awaits reconcile, so the next render shows the new state.
         await enableProjectFlow(ui, deps, cwd);
       } else {
@@ -441,12 +405,10 @@ export function buildConfigMenuOptions(
   const thinkingLevels = session?.getAvailableThinkingLevels() ?? [];
   return [
     `🔧 Tool: ${config.tool ?? "brief"}`,
-    `💭 Thinking: ${config.thinking ?? "brief"}`,
     ...(host !== "pi" && thinkingLevels.length > 0
       ? [`🧠 Thinking level: ${session?.thinkingLevel ?? "off"}`]
       : []),
     `🔄 Retry: ${config.retryCount ?? 3}`,
-    `🐚 Shell confirm: ${config.bashConfirm ?? "dangerous"}`,
     BACK_LABEL,
   ];
 }
@@ -461,8 +423,6 @@ async function configMenu(ui: MenuUi, configDeps: TgConfigDeps, sessionDeps?: Se
 
     if (choice.startsWith("🔧 Tool:")) {
       await configToolFlow(ui, configDeps);
-    } else if (choice.startsWith("💭 Thinking:")) {
-      await configThinkingFlow(ui, configDeps);
     } else if (choice.startsWith("🧠 Thinking level:")) {
       if (!session || thinkingLevels.length === 0) continue;
       const labels = thinkingLevels.map((l) => (l === session.thinkingLevel ? "● " : "  ") + String(l));
@@ -475,8 +435,6 @@ async function configMenu(ui: MenuUi, configDeps: TgConfigDeps, sessionDeps?: Se
       }
     } else if (choice.startsWith("🔄 Retry:")) {
       await configRetryFlow(ui, configDeps);
-    } else if (choice.startsWith("🐚 Shell confirm:")) {
-      await configBashFlow(ui, configDeps);
     }
   }
 }
@@ -484,62 +442,15 @@ async function configMenu(ui: MenuUi, configDeps: TgConfigDeps, sessionDeps?: Se
 // ── Switch instance submenu ────────────────────────────────────────────────
 
 async function switchInstanceMenu(ui: MenuUi, switchDeps: SwitchInstanceDeps, forumChatId?: number): Promise<boolean> {
-  const coordinator = switchDeps.getCoordinator();
-  if (coordinator && forumChatId !== undefined) {
-    const instances = (await coordinator.listInstances()).filter(instance => validForumRegistration(instance.forum)
-      && instance.forum.chatId === forumChatId && instance.forum.threadId !== null);
-    const choices = instances.map(instance => formatInstanceChoice(instance, coordinator.instanceId));
-    const selected = await pick(ui, "在线 Pi 会话（点击后查看话题链接，不切换 Bot 收件人）", [...choices, BACK_LABEL]);
-    const target = instances[choices.indexOf(selected ?? "")];
-    if (target?.forum?.threadId) ui.notify(forumTopicLink(forumChatId, target.forum.threadId)
-      ?? `Topic ${target.forum.threadId}`, "info");
+  const chatId = forumChatId ?? switchDeps.getForumChatId();
+  const sessions = (await switchDeps.listSessions().catch(() => [])).filter(s => s.threadId !== undefined);
+  if (chatId === undefined || sessions.length === 0) {
+    ui.notify("现在没有在线的 Pi 会话（或网关未运行）。", "info");
     return true;
   }
-  if (!coordinator || !coordinator.isActive()) {
-    ui.notify("This pi instance is not the active Telegram instance.", "error");
-    return true; // back to main
-  }
-  const instances = await coordinator.listInstances();
-  const active = coordinator.getActive();
-  if (!active || instances.length === 0) {
-    ui.notify("No live Telegram instances are available.", "error");
-    return true; // back to main
-  }
-
-  const choices = instances.map((instance) => formatInstanceChoice(instance, active.instanceId));
-  const selected = await pick(ui, "Switch Telegram pi instance", [...choices, BACK_LABEL]);
-  if (!selected || selected === BACK_LABEL) return true; // back to main
-
-  const target = instances[choices.indexOf(selected)];
-  if (!target) return true;
-
-  const turn = switchDeps.getCurrentTurn();
-  const chatId = turn?.chatId ?? switchDeps.getCurrentChatId();
-  if (chatId === undefined) {
-    ui.notify("No active Telegram chat is available for history replay.", "error");
-    return true;
-  }
-
-  const handoffId = randomUUID();
-  const pendingHandoffs = switchDeps.pendingHandoffs;
-  pendingHandoffs.add(handoffId);
-  try {
-    await switchDeps.stopPolling();
-    await coordinator.switchTo(
-      target.id,
-      {
-        chatId,
-        messageThreadId: turn?.messageThreadId,
-        sourceMessageId: turn?.sourceMessageId,
-      },
-      { instanceId: active.instanceId, generation: active.generation },
-    );
-  } finally {
-    pendingHandoffs.delete(handoffId);
-    switchDeps.requestReconcile();
-    if (pendingHandoffs.size === 0 && coordinator.isActive() && !coordinator.getActive()?.replay) {
-      switchDeps.startPolling();
-    }
-  }
-  return true; // back to main
+  const choices = sessions.map(s => `${basename(s.cwd) || s.cwd} · ${(s.sessionId ?? "session").slice(0, 8)}`);
+  const selected = await pick(ui, "在线 Pi 会话（点击后查看话题链接）", [...choices, BACK_LABEL]);
+  const target = sessions[choices.indexOf(selected ?? "")];
+  if (target?.threadId) ui.notify(forumTopicLink(chatId, target.threadId) ?? `Topic ${target.threadId}`, "info");
+  return true;
 }

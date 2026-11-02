@@ -4,12 +4,13 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { readBudget } from "../context-budget/config.ts";
-import { readBotRegistry, writeBotRegistry, writeProjectBinding } from "../../core/config.ts";
-import { processTelegramUpdatesBatch } from "../../core/polling.ts";
-import { TelegramInstanceCoordinator } from "../../core/instance-coordinator.ts";
+import { readBotRegistry, updateBot, writeBotRegistry, writeProjectBinding } from "../../core/config.ts";
+import type { GatewayClientDeps, GatewayOpen } from "../gateway-client.ts";
 import extension from "../../../index.ts";
 
-const mock = vi.hoisted(() => ({ session: undefined as any, polling: undefined as any }));
+// The agent2telegram gateway, faked: the test says when it connects and which updates it hands over.
+type FakeGateway = { deps: GatewayClientDeps; open?: GatewayOpen; stopped: boolean; buttons: number[] };
+const mock = vi.hoisted(() => ({ session: undefined as any, gateway: undefined as FakeGateway | undefined }));
 vi.mock("../session-capture.ts", () => ({ getActiveSession: () => mock.session,
   installAgentSessionCapture: async () => {}, isOmpHost: () => false }));
 vi.mock("../status-footer.ts", () => ({ installTelegramStatusAlignment: () => {} }));
@@ -18,12 +19,17 @@ vi.mock("../tui-bridge.ts", async importOriginal => ({ ...await importOriginal<t
     ready: async () => {}, isAvailable: () => true, getHost: () => "pi", getUnsupportedReason: () => undefined, getCommands: async () => [],
     submit: () => false, key: () => false, write: () => false, snapshot: () => undefined,
     isEditorFocused: () => true, isInteractiveFocus: () => false, onLocalSubmit: () => () => {} } }));
-vi.mock("../../core/polling.ts", async importOriginal => ({ ...await importOriginal<typeof import("../../core/polling.ts")>(),
-  createTelegramPollingRuntime: (deps: any) => { mock.polling = deps;
-    return { start: () => {}, stop: () => {}, isActive: () => false };  } }));
+vi.mock("../gateway-client.ts", async importOriginal => ({ ...await importOriginal<typeof import("../gateway-client.ts")>(),
+  GatewayClient: class {
+    constructor(deps: GatewayClientDeps) { mock.gateway = { deps, stopped: false, buttons: [] }; }
+    start(open: GatewayOpen) { mock.gateway!.open = open; }
+    stop() { mock.gateway!.stopped = true; return Promise.resolve(); }
+    rememberButton(id: number) { mock.gateway!.buttons.push(id); }
+    listSessions() { return Promise.resolve([]); }
+  } }));
 
 let sequence = 0; let cleanup: (() => Promise<void>) | undefined;
-afterEach(async () => { await cleanup?.(); cleanup = undefined; vi.restoreAllMocks(); vi.unstubAllGlobals(); mock.session = undefined; });
+afterEach(async () => { await cleanup?.(); cleanup = undefined; vi.restoreAllMocks(); vi.unstubAllGlobals(); mock.session = undefined; mock.gateway = undefined; });
 async function setup(options: { unpaired?: boolean } = {}) {
   const root = await mkdtemp(join(tmpdir(), "forum-entry-")); const cwd = join(root, "work");
   await mkdir(cwd); const oldAgentDir = process.env.PI_CODING_AGENT_DIR; const oldCache = process.env.AGENT2TELEGRAM_DIR;
@@ -103,11 +109,18 @@ async function setup(options: { unpaired?: boolean } = {}) {
   };
   extension(pi);
   await emit("session_start", { type: "session_start", reason: "startup" });
-  if (!options.unpaired) {
+  await vi.waitFor(() => expect(mock.gateway?.open).toBeDefined());
+  const connect = async (threadId = 11) => {
+    mock.gateway!.deps.onState({ kind: "connected", threadId });
     await vi.waitFor(() => expect(calls.some(c => c.method === "sendMessage" && c.body.text.includes("本话题对应此目录"))).toBe(true), { timeout: 4000 });
-  }
+  };
+  if (!options.unpaired) await connect();
   return { root, cwd, uploads, token, bot, sessionManager, settingsManager, session, commands, hostUi, calls, prompts, emit, fetchMock,
-    dispatch: (update: any) => processTelegramUpdatesBatch([update], mock.polling),
+    connect,
+    // What the gateway hands this session (it already filtered the topic and the user).
+    // Like the real client: hand over without waiting for the handling to finish.
+    dispatch: async (update: any) => { void mock.gateway!.deps.onUpdate(update).catch(() => undefined); await new Promise(r => setTimeout(r, 10)); },
+    gateway: () => mock.gateway!,
     blockFile: () => { blockFile = true; }, fileStarted: () => fileStarted, releaseFile: () => releaseFile?.(),
     shutdown: async () => { stopped = true; await emit("session_shutdown", { type: "session_shutdown" }); } };
 }
@@ -115,46 +128,31 @@ const incoming = (update_id: number, text?: string, thread = 11, user = 7) => ({
   message: { message_id: 1000 + update_id, from: { id: user }, chat: { id: -100123, type: "supergroup" },
     message_thread_id: thread, ...(text === undefined ? { document: { file_id: "fake-input", file_name: "../../input.txt" } } : { text }) } });
 
-describe("unpaired forum Bot accepts /pair only in a private chat (offline)", () => {
-  it("ignores /pair in the forum group, pairs from a private chat, and stores the user on the Bot", async () => {
+describe("pairing happens in the gateway (offline)", () => {
+  it("registers with the gateway before pairing and accepts the topic once the gateway has paired the user", async () => {
     const f = await setup({ unpaired: true });
-    const code = await vi.waitFor(async () => {
-      const bot = (await readBotRegistry()).bots.find(b => b.id === "test");
-      expect(bot?.pairingCode).toBeTruthy();
-      return bot!.pairingCode!;
-    });
-    // Correct code but sent in the forum group: ignored, nothing paired.
-    await f.dispatch({ update_id: 1, message: { message_id: 2001, from: { id: 7 },
-      chat: { id: -100123, type: "supergroup" }, message_thread_id: 11, text: `/pair ${code}` } });
-    expect(f.calls.some(c => c.method === "sendMessage" && String(c.body.text).includes("paired"))).toBe(false);
-    let next = 2;
-    await vi.waitFor(async () => {
-      await f.dispatch({ update_id: next, message: { message_id: 2000 + next, from: { id: 7 },
-        chat: { id: 7, type: "private" }, text: `/pair ${code}` } });
-      next += 1;
-      expect(f.calls.some(c => c.method === "sendMessage" && c.body.chat_id === 7
-        && String(c.body.text).includes("paired"))).toBe(true);
-    }, { timeout: 4000 });
-    const bot = (await readBotRegistry()).bots.find(b => b.id === "test");
-    expect(bot?.allowedUserId).toBe(7);
-    expect(bot?.pairingCode).toBeUndefined();
-    expect(f.prompts).toEqual([]);
+    expect(f.gateway().open).toMatchObject({ cwd: f.cwd, pid: process.pid });
+    // The gateway paired the user and wrote it to tg.json; Pi reads it on the next update.
+    await updateBot("test", { allowedUserId: 7 });
+    await f.connect();
+    await f.dispatch(incoming(1, "after pairing"));
+    await vi.waitFor(() => expect(f.prompts).toEqual(["after pairing"]));
+    expect((await readBotRegistry()).bots.find(b => b.id === "test")?.allowedUserId).toBe(7);
   });
 });
 
 describe("real extension entry wired to fake Pi and Telegram (offline)", () => {
-  it("checkpoints real update context, routes one prompt, formats a streamed final edit, rejects unauthorized and offline topics", async () => {
-    const f = await setup(); const cursor = vi.spyOn(TelegramInstanceCoordinator.prototype, "persistCursor");
+  it("registers its directory, routes one prompt, sends the final answer to its topic, and rejects another user", async () => {
+    const f = await setup();
+    expect(f.gateway().open).toMatchObject({ cwd: f.cwd, pid: process.pid });
     await f.dispatch(incoming(1, "hello entry"));
     await vi.waitFor(() => expect(f.prompts).toEqual(["hello entry"]));
     await vi.waitFor(() => expect(f.calls.some(c => c.method === "sendMessage" && c.body.text.includes("final:hello entry"))).toBe(true));
     expect(f.calls.some(c => c.method === "editMessageText" && c.body.text.includes("hello entry"))).toBe(false);
-    expect(cursor).toHaveBeenCalledWith(1);
-    await f.dispatch(incoming(2, "wrong user", 11, 8)); await f.dispatch(incoming(3, "offline", 999));
+    await f.dispatch(incoming(2, "wrong user", 11, 8));
     expect(f.prompts).toHaveLength(1);
     const messages = f.calls.filter(c => c.method === "sendMessage");
-    expect(messages.every(c => c.body.chat_id === -100123 && [11, 999].includes(c.body.message_thread_id))).toBe(true);
-    expect(messages.some(c => c.body.message_thread_id === 999 && c.body.text.includes("不会自动启动"))).toBe(true);
+    expect(messages.every(c => c.body.chat_id === -100123 && c.body.message_thread_id === 11)).toBe(true);
     // The topic now belongs to the directory map, not to the Pi session file.
     expect(f.sessionManager.getEntries().some(e => e.type === "custom" && e.customType.includes("forum-binding"))).toBe(false);
   });
@@ -165,7 +163,6 @@ describe("real extension entry wired to fake Pi and Telegram (offline)", () => {
     f.hostUi.input.mockResolvedValueOnce("1050000").mockResolvedValueOnce("800000");
     f.hostUi.confirm.mockResolvedValue(true);
     await f.dispatch(incoming(1, "/context_budget", 11, 8));
-    await f.dispatch(incoming(2, "/context_budget", 999));
     expect(f.hostUi.custom).not.toHaveBeenCalled(); expect(f.hostUi.select).not.toHaveBeenCalled();
     expect(readBudget(f.cwd).revision).toBeNull();
     await f.dispatch(incoming(3, "/context_budget"));
@@ -201,12 +198,6 @@ describe("real extension entry wired to fake Pi and Telegram (offline)", () => {
     expect(readBudget(f.cwd).revision).toBeNull(); expect(f.hostUi.select).not.toHaveBeenCalled();
     expect(f.prompts).toEqual([]);
   });
-  it("never forwards when cursor persistence fails and explicitly tells the requesting topic that nothing ran", async () => {
-    const f = await setup(); vi.spyOn(TelegramInstanceCoordinator.prototype, "persistCursor").mockRejectedValue(new Error("synthetic disk failure"));
-    await f.dispatch(incoming(1, "must not execute"));
-    await new Promise(resolve => setTimeout(resolve, 30)); expect(f.prompts).toEqual([]);
-    expect(f.calls.some(c => c.method === "sendMessage" && c.body.message_thread_id === 11 && c.body.text.includes("本条指令未执行"))).toBe(true);
-  });
   it("downloads only synthetic data to the upload cache with a sanitized randomized name and submits it to that session", async () => {
     const f = await setup(); await f.dispatch(incoming(1));
     await vi.waitFor(() => expect(f.prompts).toHaveLength(1));
@@ -223,15 +214,19 @@ describe("real extension entry wired to fake Pi and Telegram (offline)", () => {
     expect(f.prompts).toEqual([]); expect((await readdir(f.cwd)).filter(name => name.endsWith(".txt"))).toEqual([]);
     expect(await readdir(f.uploads).catch(() => [])).toEqual([]);
   });
-  it("keeps the forum sender live after another online coordinator becomes the sole receiver", async () => {
+  it("sends local output to its topic while connected, and stops when the gateway drops it", async () => {
     const f = await setup();
-    const other = new TelegramInstanceCoordinator({ token: f.token, instanceId: "other", startedAt: new Date().toISOString() });
-    await other.reconcile({ cwd: f.cwd, sessionId: "other-session" });
-    const active = other.getActive()!; await other.switchTo("other", undefined, active);
-    await vi.waitFor(() => expect(mock.polling.shouldPoll()).toBe(false), { timeout: 4500, interval: 80 });
-    await f.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "local follower output" }] } });
-    await vi.waitFor(() => expect(f.calls.some(c => c.method === "sendMessage" && c.body.text.includes("local follower output")
+    await f.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "local output" }] } });
+    await vi.waitFor(() => expect(f.calls.some(c => c.method === "sendMessage" && c.body.text.includes("local output")
       && c.body.message_thread_id === 11)).toBe(true));
-    await other.releaseActive();
-  }, 10_000);
+    f.gateway().deps.onState({ kind: "waiting", reason: "Telegram 网关未运行（a2t status）。" });
+    await f.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "while offline" }] } });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(f.calls.some(c => c.method === "sendMessage" && String(c.body.text).includes("while offline"))).toBe(false);
+  });
+  it("says goodbye to the gateway when the session shuts down", async () => {
+    const f = await setup();
+    await f.shutdown();
+    expect(f.gateway().stopped).toBe(true);
+  });
 });

@@ -13,7 +13,8 @@ export type HeartbeatDeps = {
   getConfig: () => TelegramConfig;
   getActiveTurns: () => TelegramTurn[];
   sendChatAction: (chatId: number, action: string, messageThreadId?: number) => Promise<void>;
-  ensurePollingStarted: () => void;
+  /** Restart a poller that stopped (agents that poll Telegram themselves). */
+  ensurePollingStarted?: () => void;
 };
 
 export function createHeartbeat(deps: HeartbeatDeps) {
@@ -73,7 +74,7 @@ export function createHeartbeat(deps: HeartbeatDeps) {
   const startStatusHeartbeat = (onHeartbeat: () => void): void => {
     if (statusTimer) return;
     statusTimer = setInterval(() => {
-      deps.ensurePollingStarted();
+      deps.ensurePollingStarted?.();
       onHeartbeat();
     }, HEARTBEAT_MS);
   };

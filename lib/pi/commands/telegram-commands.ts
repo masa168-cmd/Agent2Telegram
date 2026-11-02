@@ -5,13 +5,12 @@ import { escapeHtml } from "../../core/html.ts";
 import { getTelegramBotUsername } from "../../core/telegram-api.ts";
 import { createTelegramPairingCode, ensureTelegramPairingCode, formatPairingInstructions, isPairingCodeExpired, pairingCodeExpiry } from "../../core/pairing.ts";
 import type { BotRecord, ResolvedTelegramConfig, TelegramConfig, TelegramTransport } from "../../core/types.ts";
-import type { TelegramPollingRuntime } from "../../core/polling.ts";
 import { log } from "../../core/logger.ts";
 
 const tgCmdLog = log.child("tg-commands");
 
 /** Live Telegram connection state of THIS pi process, as reported by the runtime. */
-export type TelegramConnectionState = "connected" | "connecting" | "other-instance" | "disconnected";
+export type TelegramConnectionState = "connected" | "connecting" | "disconnected";
 
 export type TelegramCommandDeps = {
   getConfig: () => TelegramConfig;
@@ -21,7 +20,8 @@ export type TelegramCommandDeps = {
   switchResolvedConfig: (next: ResolvedTelegramConfig) => void;
   isTelegramEnabled: () => boolean;
   transport: TelegramTransport;
-  getPolling: () => TelegramPollingRuntime;
+  /** This session's link to the agent2telegram gateway (connect / disconnect). */
+  getConnection: () => { start(): void; stop(): Promise<void>; isActive(): boolean };
   refreshStatus: () => void;
   syncTelegramCommands: () => Promise<void>;
   startStatusHeartbeat: () => void;
@@ -268,7 +268,7 @@ export async function removeBotFlow(
   const currentBot = deps.getResolvedConfig()?.bot;
   if (currentBot?.id === bot.id) {
     deps.switchResolvedConfig(await readResolvedTelegramConfig(cwd));
-    await deps.getPolling().stop();
+    await deps.getConnection().stop();
     deps.refreshStatus();
   }
 }
@@ -360,13 +360,13 @@ export async function bindProjectFlow(
       "info",
     );
   }
-  await deps.getPolling().stop();
+  await deps.getConnection().stop();
   deps.switchResolvedConfig(await bindProjectTelegram(workspacePath, bot.id));
   const config = ensureTelegramPairingCode(deps.getConfig());
   if (config !== deps.getConfig()) {
     await updateBot(bot.id, { ...(config.pairingCode !== undefined ? { pairingCode: config.pairingCode, pairingCodeExpiresAt: config.pairingCodeExpiresAt } : {}) });
   }
-  deps.getPolling().start();
+  deps.getConnection().start();
   await deps.syncTelegramCommands();
   deps.startStatusHeartbeat();
   deps.refreshStatus();
@@ -407,8 +407,8 @@ export async function enableProjectFlow(
   }
   deps.switchResolvedConfig(await readResolvedTelegramConfig(workspacePath));
   deps.setConfig({ ...deps.getConfig(), telegramEnabled: true });
-  await deps.getPolling().stop();
-  if (deps.isTelegramEnabled()) deps.getPolling().start();
+  await deps.getConnection().stop();
+  if (deps.isTelegramEnabled()) deps.getConnection().start();
   deps.clearStatusError();
   deps.startStatusHeartbeat();
   await deps.awaitReconcile();
@@ -438,7 +438,7 @@ export async function disableProjectFlow(
     await updateProjectBindingLocked(workspacePath, () => ({ enabled: false }));
   }
   deps.switchResolvedConfig(await readResolvedTelegramConfig(workspacePath));
-  await deps.getPolling().stop();
+  await deps.getConnection().stop();
   deps.clearStatusError();
   await deps.awaitReconcile();
   deps.refreshStatus();
@@ -460,9 +460,9 @@ export async function unbindProjectFlow(
     const confirmed = await ui.confirm(`Unbind project?`, `Remove Telegram project binding for ${project.path}?`);
     if (!confirmed) return;
   }
-  await deps.getPolling().stop();
+  await deps.getConnection().stop();
   deps.switchResolvedConfig(await unbindProjectTelegram(workspacePath));
-  if (deps.isTelegramEnabled()) deps.getPolling().start();
+  if (deps.isTelegramEnabled()) deps.getConnection().start();
   await deps.syncTelegramCommands();
   deps.refreshStatus();
   ui.notify(`Removed Telegram project binding:\n${escapeHtml(project.path)}\nProject now uses the default bot (if any).`, "info");

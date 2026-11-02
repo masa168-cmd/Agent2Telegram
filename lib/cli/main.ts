@@ -5,12 +5,13 @@ import { userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { a2tHome, agentDataDir } from "../core/a2t-home.ts";
-import { disableClaudeProject, enableClaudeProject, readClaudeProjects } from "../claude/gateway/projects.ts";
+import { disableClaudeProject, enableClaudeProject, readClaudeProjects } from "../gateway/claude-projects.ts";
 import { claudeAvailable, installClaudePlugin, removeClaudePlugin } from "./claude-plugin.ts";
 import { disablePi, enablePi, isPiEnabled } from "./pi-entry.ts";
-import { GATEWAY_SERVICE, LEGACY_GATEWAY_SERVICE, gatewayStatus, gatewayUnit, installGatewayService, lingerEnabled,
+import { GATEWAY_SERVICE, LEGACY_GATEWAY_SERVICES, gatewayStatus, gatewayUnit, installGatewayService, lingerEnabled,
   removeGatewayService, run } from "./service.ts";
 import { runSetup } from "./setup.ts";
+import { postUnix } from "../pi/gateway-client.ts";
 
 /** The app root: the nearest folder above this file whose package.json is agent2telegram. */
 export function appDir(start = dirname(fileURLToPath(import.meta.url))): string {
@@ -30,7 +31,7 @@ const USAGE = `用法：a2t <命令>
   setup <pi|claude>           配置 Bot（Token 只在这里输入）
   enable <pi|claude> [目录]   在目录（默认当前目录）开启 Telegram
   disable <pi|claude> [目录]  关闭
-  gateway <restart|status|logs>  Claude 网关服务
+  gateway <restart|status|logs>  网关服务（Pi 与 Claude Code 共用）
   migrate [--apply]           把旧位置的数据迁到 ~/.agent2telegram（默认只列清单）
   uninstall [--purge]         卸载入口、插件和服务；--purge 连数据一起删除
   upgrade                     从 GitHub 重新安装最新版本`;
@@ -44,13 +45,21 @@ function version(): string {
   try { return (JSON.parse(readFileSync(join(appDir(), "package.json"), "utf8")) as { version?: string }).version ?? "?"; } catch { return "?"; }
 }
 
-function status(): void {
+/** What the gateway says about one agent: online sessions, or why it is not ready. */
+async function agentHealth(agent: "pi" | "claude"): Promise<string> {
+  const reply = await postUnix(join(agentDataDir(agent), "gateway.sock"), "/health", {}, 2_000);
+  if (!reply) return "网关未连接";
+  return reply.ok ? `在线会话 ${(reply as { sessions?: number }).sessions ?? 0}` : `未就绪：${reply.reason ?? "?"}`;
+}
+
+async function status(): Promise<void> {
   const home = a2tHome();
   console.log(`agent2telegram ${version()}  程序：${appDir()}  数据：${home}`);
+  console.log(`网关 ${GATEWAY_SERVICE}：${gatewayStatus()}；linger ${lingerEnabled(userInfo().username) ? "已开启" : "未开启"}`);
   const piBots = existsSync(join(agentDataDir("pi"), "tg.json")) ? "已配置" : "未配置";
   const claudeBots = existsSync(join(agentDataDir("claude"), "tg.json")) ? "已配置" : "未配置";
-  console.log(`Pi：Bot ${piBots}；当前目录 ${isPiEnabled(process.cwd()) ? "已开启" : "未开启"}`);
-  console.log(`Claude Code：Bot ${claudeBots}；网关 ${gatewayStatus()}；linger ${lingerEnabled(userInfo().username) ? "已开启" : "未开启"}`);
+  console.log(`Pi：Bot ${piBots}；${await agentHealth("pi")}；当前目录 ${isPiEnabled(process.cwd()) ? "已开启" : "未开启"}`);
+  console.log(`Claude Code：Bot ${claudeBots}；${await agentHealth("claude")}`);
   const dirs = readClaudeProjects(agentDataDir("claude")).dirs;
   console.log(`Claude 已开启目录：${dirs.length ? `\n  ${dirs.join("\n  ")}` : "无"}`);
 }
@@ -61,9 +70,12 @@ function postInstall(agents: string[]): void {
   if (agents.includes("claude")) {
     if (!claudeAvailable()) console.log("未找到 claude 命令，跳过 Claude Code 插件。装好 Claude Code 后重新运行安装。");
     else for (const line of installClaudePlugin(app)) console.log(line);
+  }
+  // Pi and Claude Code both reach Telegram through the gateway.
+  if (agents.length > 0) {
     if (process.env.A2T_SKIP_SYSTEMD === "1") console.log("已跳过 systemd 服务（A2T_SKIP_SYSTEMD=1）。");
     else {
-      if (removeGatewayService(LEGACY_GATEWAY_SERVICE)) console.log(`已移除旧服务 ${LEGACY_GATEWAY_SERVICE}`);
+      for (const name of LEGACY_GATEWAY_SERVICES) if (removeGatewayService(name)) console.log(`已移除旧服务 ${name}`);
       for (const line of installGatewayService(gatewayUnit({ node: process.execPath, appDir: app, a2tHome: a2tHome() }))) console.log(line);
       if (!lingerEnabled(userInfo().username)) {
         console.log(`提示：linger 未开启，SSH 全部断开后网关会停止。需要常驻请运行：loginctl enable-linger ${userInfo().username}`);
@@ -77,7 +89,7 @@ function uninstall(purge: boolean): void {
   for (const line of removeClaudePlugin()) console.log(line);
   // systemd --user is per user, not per HOME: a sandbox must say so explicitly.
   if (process.env.A2T_SKIP_SYSTEMD === "1") console.log("已跳过 systemd 服务（A2T_SKIP_SYSTEMD=1）。");
-  else for (const name of [GATEWAY_SERVICE, LEGACY_GATEWAY_SERVICE]) if (removeGatewayService(name)) console.log(`已移除服务 ${name}`);
+  else for (const name of [GATEWAY_SERVICE, ...LEGACY_GATEWAY_SERVICES]) if (removeGatewayService(name)) console.log(`已移除服务 ${name}`);
   console.log("各目录的 Pi 入口请用 a2t disable pi <目录> 移除（a2t 不扫描你的磁盘）。");
   console.log(purge ? `请手动删除 ${a2tHome()}（含配置与数据），a2t 不会自动删除。` : `配置与数据保留在 ${a2tHome()}。`);
 }
@@ -85,7 +97,7 @@ function uninstall(purge: boolean): void {
 export async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
   switch (command) {
-    case "status": status(); return 0;
+    case "status": await status(); return 0;
     case "setup": return runSetup(agentArg(rest[0]), agentDataDir(agentArg(rest[0])));
     case "enable": {
       const agent = agentArg(rest[0]);

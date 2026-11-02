@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { disableClaudeProject, enableClaudeProject, isClaudeProjectEnabled } from "../../claude/gateway/projects.ts";
+import { disableClaudeProject, enableClaudeProject, isClaudeProjectEnabled } from "../../gateway/claude-projects.ts";
 import { getProjectBindingPath } from "../../core/config.ts";
 import { appDir } from "../main.ts";
 import { planMigration, runMigrate } from "../migrate.ts";
@@ -52,13 +52,13 @@ describe("a2t enable / disable", () => {
 describe("gateway service", () => {
   it("generates a unit for the installed app and installs it idempotently", () => {
     const unit = gatewayUnit({ node: "/usr/bin/node", appDir: "/a/app", a2tHome: "/a" });
-    expect(unit).toContain("ExecStart=/usr/bin/node /a/app/dist/lib/claude/gateway/main.js");
+    expect(unit).toContain("ExecStart=/usr/bin/node /a/app/dist/lib/gateway/main.js");
     expect(unit).toContain("Environment=AGENT2TELEGRAM_DIR=/a");
     const calls: string[][] = [];
     const exec = (command: string, args: string[]) => { calls.push([command, ...args]); return ""; };
     expect(installGatewayService(unit, exec)[0]).toContain("写入");
     expect(installGatewayService(unit, exec).some(line => line.includes("写入"))).toBe(false);
-    expect(existsSync(join(serviceDir(), "agent2telegram-claude.service"))).toBe(true);
+    expect(existsSync(join(serviceDir(), "agent2telegram-gateway.service"))).toBe(true);
     expect(calls.filter(c => c.includes("restart"))).toHaveLength(2);
   });
 });

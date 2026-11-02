@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { restartArgv, restartCommand, runRestart, type RestartJob } from "../gateway/restart-helper.ts";
+import { restartArgv, restartCommand, runRestart, type RestartJob } from "../restart-helper.ts";
 
 describe("Claude /restart helper", () => {
   const dirs: string[] = [];

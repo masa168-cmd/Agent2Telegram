@@ -2,7 +2,6 @@ import { getCurrentTelegramTurn } from "../../core/turn-context.ts";
 import { queuePendingNotice } from "../../core/pending-notices.ts";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { CommandRegistry } from "./register.ts";
-import { checkpointCurrentUpdateCursor } from "../../core/polling.ts";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -56,10 +55,8 @@ export function registerLifecycleCommands(registry: CommandRegistry): void {
           createdAt: Date.now(),
         });
       }
-      // /reload re-activates the plugin in-process; commit this update first so
-      // the replacement runtime does not re-fetch and re-run the unconfirmed
-      // /reload (which would call ctx.reload() again).
-      await checkpointCurrentUpdateCursor();
+      // The gateway already committed this update before handing it over, so the
+      // reloaded runtime is not served /reload again.
       await ctx.reload();
       return;
     },
@@ -100,8 +97,6 @@ export function registerLifecycleCommands(registry: CommandRegistry): void {
         return;
       }
       ui.notify("正在重启 Pi…", "info");
-      // Commit this update so the restarted Pi does not fetch and run /restart again.
-      await checkpointCurrentUpdateCursor();
       // ctx.shutdown() only notifies (session-capture replaces it); use the mode's real exit.
       if (!requestHostShutdown()) ui.notify("未能调用 Pi 的退出接口，Pi 未退出；重启助手会在 30 秒后放弃。", "error");
     },

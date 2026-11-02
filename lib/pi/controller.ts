@@ -2,7 +2,6 @@ import type { ExtensionCommandContext, ExtensionUIContext } from "@earendil-work
 import { DIALOG_CALLBACK_PREFIX, MENU_ALL_CALLBACK_PREFIX, decodeDialogCallback, decodeMoreCallback, decodeRunCallback, decodeUiCallback, encodeMoreCallback, encodeRunCallback } from "../core/callback-protocol.ts";
 import { parseLeadingCommand, normalizeLeadingCommand } from "../core/command-parser.ts";
 import type {
-  TelegramBashConfirm,
   TelegramButton,
   TelegramCallbackQuery,
   TelegramConfig,
@@ -659,8 +658,6 @@ async function holdThroughEnqueuedTurns(ctx: unknown, wasIdle: boolean): Promise
   }
 }
 
-const TUI_SCREEN_WIDTH = 100;
-
 // Host-control and terminal-only mappings (§9 decisions 21/22, §4.8): these run the
 // plugin's native handler instead of submitting to the host editor - editor
 // submission reloads the extension runtime outside pi's withSession sequencing.
@@ -679,25 +676,6 @@ const PLUGIN_LOCAL_COMMANDS: Record<string, true> = {
 const MORE_PAGE_SIZE = 30;
 const MORE_ROW_SIZE = 3;
 
-const DANGEROUS_BASH_PATTERNS: readonly RegExp[] = [
-  /\brm\s+(-[a-z]*[rf]|--recursive|--force)\b/i,
-  /\bsudo\b/i,
-  /\bmkfs(?:\.\w+)?\b/i,
-  /\bdd\s+if=/i,
-  /:\s*\(\s*\)\s*\{/, // fork bomb
-  /\b(shutdown|reboot|halt|poweroff)\b/i,
-  /\bkill(?:all)?\s+-[0-9]/i,
-  /\bchmod\s+(-R\s+)?777\b/i,
-  /\b(chown|chgrp)\s+-R\b/i,
-  /\bcurl\b[^\n|]*\|\s*(?:ba|z|k)?sh\b/i,
-  /\bwget\b[^\n|]*\|\s*(?:ba|z|k)?sh\b/i,
-  />\s*\/dev\/(?:sd|disk|nvme)/i,
-  /\bgit\s+reset\s+--hard\b/i,
-  /\bgit\s+clean\s+-[a-z]*f/i,
-  /\btruncate\s+-s\s*0\b/i,
-  /\b(?:diskutil|fdisk|parted)\b/i,
-];
-
 type BashAbort = () => unknown;
 
 function readBashAbort(session: CapturedAgentSession): BashAbort | undefined {
@@ -707,58 +685,6 @@ function readBashAbort(session: CapturedAgentSession): BashAbort | undefined {
 
 function isBashRunning(session: CapturedAgentSession): boolean {
   return (session as unknown as Record<string, unknown>).isBashRunning === true;
-}
-
-function isDangerousBash(command: string): boolean {
-  return DANGEROUS_BASH_PATTERNS.some((pattern) => pattern.test(command));
-}
-
-function preformatted(text: string): string {
-  return `<pre>${escapeHtml(text)}</pre>`;
-}
-
-// editText/editButtons only deliver the first split chunk, so a full-screen
-// snapshot must fit in one chunk (3600 bytes). Keep the bottom of the screen:
-// dialogs, prompts, and the latest output render there.
-const TUI_SNAPSHOT_MAX_BYTES = 3000;
-
-/**
- * Fit a rendered screen into a Telegram message without losing the parts a
- * user needs to interact: the host pads dialogs to the terminal height with
- * blank rows, which used to eat the budget and push the dialog's own header
- * (instructions, OAuth URL) out of the mirror. Collapse that padding first,
- * then keep both ends when the rest still overflows.
- */
-export function clipScreen(text: string, maxBytes: number): string {
-  const collapsed: string[] = [];
-  for (const line of text.split("\n")) {
-    if (line.trim() === "" && collapsed.length > 0 && collapsed[collapsed.length - 1].trim() === "") continue;
-    collapsed.push(line);
-  }
-  while (collapsed.length > 0 && collapsed[collapsed.length - 1].trim() === "") collapsed.pop();
-  const trimmed = collapsed.join("\n");
-  if (Buffer.byteLength(trimmed, "utf8") <= maxBytes) return trimmed;
-  const budget = maxBytes - 4; // "\n…\n"
-  const headLimit = Math.floor(budget * 0.45);
-  const head: string[] = [];
-  let headBytes = 0;
-  let index = 0;
-  for (; index < collapsed.length; index += 1) {
-    const size = Buffer.byteLength(collapsed[index], "utf8") + 1;
-    if (head.length > 0 && headBytes + size > headLimit) break;
-    head.push(collapsed[index]);
-    headBytes += size;
-  }
-  const tail: string[] = [];
-  let tailBytes = 0;
-  for (let i = collapsed.length - 1; i > index; i -= 1) {
-    const size = Buffer.byteLength(collapsed[i], "utf8") + 1;
-    if (tail.length > 0 && tailBytes + size > budget - headBytes) break;
-    tail.push(collapsed[i]);
-    tailBytes += size;
-  }
-  tail.reverse();
-  return [...head, "…", ...tail].join("\n");
 }
 
 /** Text that must not be swallowed by a dialog: shell input and slash commands. */
@@ -878,8 +804,8 @@ export function createTelegramController(deps: {
     activeChatId: () => deps.getConfig?.().activeChatId,
     activeTurns: () => deps.getActiveTurns?.() ?? [],
     localOrigin: () => deps.getLocalDialogOrigin?.(),
-    allowDialog: (model, component, entry) => deps.getConfig?.().forumChatId === undefined
-      || !isCredentialDialog(model, component, entry),
+    // A forum group is visible to its members: never mirror a credential dialog there.
+    allowDialog: (model, component, entry) => !isCredentialDialog(model, component, entry),
     writeText: (text) => bridge.write(text),
     // One switch for both (§9 decision 27): the broker may only track a host whose
     // dialogs it can actually read. A host without a usable bridge has no focus to
@@ -899,119 +825,27 @@ export function createTelegramController(deps: {
   const promptUiMode = (): "telegram-native" | "host" =>
     (hostOwnsPrompts(bridge) ? "host" : "telegram-native");
 
-  const BASH_BUSY_TEXT = "⚠️ A bash command is already running. Wait for it to finish, or send /stop to cancel it.";
-  // True from just before the `!` submit until the gateway call returns. The host
-  // sets session.isBashRunning only some ~60ms after the submit starts, so this
-  // flag covers that window for concurrently handled Telegram messages.
-  let bashSubmitInFlight = false;
-
+  // Telegram is a forum group (others can read it): no shell entry. The model's own
+  // Bash tool is unaffected and follows Pi's usual tool rules.
   const runTelegramBash = async (
-    command: string,
-    excludeFromContext: boolean,
+    _command: string,
+    _excludeFromContext: boolean,
     chatId: number,
     messageThreadId: number | undefined,
     sourceMessageId: number | undefined,
-    userId: number | undefined,
-    chatType: string | undefined,
   ): Promise<void> => {
-    if (deps.getConfig?.().forumChatId !== undefined || (chatType && chatType !== "private")) {
-      await deps.transport.sendText(chatId, "Shell commands are only allowed in private chats.", messageThreadId, sourceMessageId);
-      return;
-    }
-    if (!command) {
-      await deps.transport.sendText(chatId, "Usage: !<command> (or !!<command> to exclude output from context).", messageThreadId, sourceMessageId);
-      return;
-    }
-
-    const session = deps.getSession();
-    if (!session) {
-      await deps.transport.sendText(chatId, "Shell execution is not available in this session.", messageThreadId, sourceMessageId);
-      return;
-    }
-
-    // Same rule as the TUI: while a bash command is running, a new `!` is
-    // refused here, before any confirmation and before the gateway opens a
-    // scope for it (otherwise the running command's output lands on this one).
-    if (isBashRunning(session) || bashSubmitInFlight) {
-      await deps.transport.sendText(chatId, BASH_BUSY_TEXT, messageThreadId, sourceMessageId);
-      return;
-    }
-
-    const policy: TelegramBashConfirm = deps.getConfig?.().bashConfirm ?? "dangerous";
-    if (policy === "always" || (policy === "dangerous" && isDangerousBash(command))) {
-      const confirmUi = deps.ui.create(chatId, messageThreadId, sourceMessageId);
-      const approved = await confirmUi.confirm(
-        "Run shell command?",
-        `${command}\n\ncwd: ${process.cwd()}\ncontext: ${excludeFromContext ? "excluded" : "included"}`,
-      );
-      if (!approved) {
-        await deps.transport.sendText(chatId, "Shell command cancelled.", messageThreadId, sourceMessageId);
-        return;
-      }
-    }
-
-    // D3b (decision 51): the host editor executes. The raw `!`/`!!` text is
-    // submitted through the gateway exactly like a host slash command; the
-    // host's own user_bash pipeline decides context inclusion and runs the
-    // command, and OutputCapture returns the BashExecutionComponent's final
-    // render to the ack message.
-    // A confirmation may have taken a while; re-check before submitting.
-    if (isBashRunning(session) || bashSubmitInFlight) {
-      await deps.transport.sendText(chatId, BASH_BUSY_TEXT, messageThreadId, sourceMessageId);
-      return;
-    }
-    const text = `${excludeFromContext ? "!!" : "!"}${command}`;
-    let submitted: boolean;
-    bashSubmitInFlight = true;
-    try {
-      submitted = await commandGateway.runText({
-        text,
-        label: "!",
-        origin: { chatId, messageThreadId, sourceMessageId },
-        transport: deps.transport,
-      });
-    } finally {
-      bashSubmitInFlight = false;
-    }
-    if (!submitted) {
-      await deps.transport.sendText(chatId, "Shell execution is not available in this session.", messageThreadId, sourceMessageId);
-      return;
-    }
-    ctrlLog.info("telegram bash submitted", {
-      chatId,
-      userId,
-      cwd: process.cwd(),
-      text,
-      excludeFromContext,
-    });
+    await deps.transport.sendText(chatId, "Telegram 中不提供 Shell 入口（!、!!）；请在 SSH 中执行。", messageThreadId, sourceMessageId);
   };
 
   const unsubscribeLocalTui = bridge.onLocalSubmit((text) => {
     if (!isCurrent() || deps.isTelegramActive?.() === false) return;
-    if (deps.getConfig?.().forumChatId !== undefined) {
-      // Never screen-scrape local login/maintenance: a frame can contain keys or OAuth codes.
-      const command = parseLeadingCommand(text.trim());
-      const origin = deps.getLocalDialogOrigin?.();
-      if (origin && command && forumCommandPolicy(command.name) !== "ssh") {
-        void deps.transport.sendText(origin.chatId, `<b>⌨️ 本地命令</b> /${escapeHtml(command.name)}`,
-          origin.messageThreadId).catch(ctrlLog.swallow("warn", "send local forum command notice failed"));
-      }
-      return;
+    // Never screen-scrape local login/maintenance: a frame can contain keys or OAuth codes.
+    const command = parseLeadingCommand(text.trim());
+    const origin = deps.getLocalDialogOrigin?.();
+    if (origin && command && forumCommandPolicy(command.name) !== "ssh") {
+      void deps.transport.sendText(origin.chatId, `<b>⌨️ 本地命令</b> /${escapeHtml(command.name)}`,
+        origin.messageThreadId).catch(ctrlLog.swallow("warn", "send local forum command notice failed"));
     }
-    const command = text.trim();
-    if (!command.startsWith("/") && !command.startsWith("!")) return;
-    if (/^\/?tg(?:-|$)/.test(command)) return;
-    const chatId = deps.getConfig?.().activeChatId;
-    if (chatId === undefined) return;
-    void (async () => {
-      await deps.transport.sendText(chatId, `<b>⌨️ TUI command</b>\n${preformatted(command)}`)
-        .catch(ctrlLog.swallow("warn", "sendText local TUI command failed", { chatId }));
-      await sleep(450);
-      const snapshot = bridge.snapshot(TUI_SCREEN_WIDTH);
-      if (!snapshot) return;
-      await deps.transport.sendText(chatId, preformatted(clipScreen(snapshot.text ?? "(empty screen)", TUI_SNAPSHOT_MAX_BYTES)))
-        .catch(ctrlLog.swallow("warn", "sendText local TUI snapshot failed", { chatId }));
-    })();
   });
 
   // Per chat/thread prompt queues: each Telegram topic chains independently.
@@ -1379,7 +1213,7 @@ export function createTelegramController(deps: {
         .catch(ctrlLog.swallow("warn", "sendText blocked-command notice failed", { chatId }));
       return true;
     }
-    if (deps.getConfig?.().forumChatId !== undefined) {
+    {
       const policy = forumCommandPolicy(name);
       if (policy === "ssh") {
         await deps.transport.sendText(chatId, "登录、密钥和话题初始化/恢复请在手机 SSH 中完成，不在群内接收凭据。", messageThreadId, sourceMessageId);
@@ -1525,8 +1359,7 @@ export function createTelegramController(deps: {
     if (known) {
       const canonical = catalog.find(command => candidates.has(command.name)
         || (command.aliases ?? []).some(alias => candidates.has(alias)))?.name;
-      if (deps.getConfig?.().forumChatId !== undefined && canonical && canonical !== name
-        && forumCommandPolicy(canonical)) {
+      if (canonical && canonical !== name && forumCommandPolicy(canonical)) {
         return dispatchNamedCommand(canonical, args, session, chatId, messageThreadId, sourceMessageId, confirmed);
       }
       // §4.5 rule 6: same as the /new gateway path above.
@@ -1563,8 +1396,6 @@ export function createTelegramController(deps: {
   return {
     async handleCallbackQuery(query) {
       if (!isCurrent()) return;
-      // Without a forum configuration, only private chats may control Pi.
-      if (deps.getConfig?.().forumChatId === undefined && query.message?.chat?.type !== "private") return;
       const chatId = query.message?.chat?.id;
       if (typeof chatId !== "number") return;
       const messageThreadId = query.message?.message_thread_id;
@@ -1665,8 +1496,6 @@ export function createTelegramController(deps: {
 
     async handleMessage(message) {
       if (!isCurrent()) return;
-      // Without a forum configuration, only private chats may control Pi.
-      if (deps.getConfig?.().forumChatId === undefined && message.chat?.type !== "private") return;
       const chatId = message.chat?.id;
       if (typeof chatId !== "number") return;
       const messageThreadId = message.message_thread_id;
@@ -1721,8 +1550,6 @@ export function createTelegramController(deps: {
           chatId,
           messageThreadId,
           sourceMessageId,
-          message.from?.id,
-          message.chat?.type,
         ).catch(async (err) => {
           ctrlLog.error("telegram bash failed", { err, chatId, userId: message.from?.id });
           await deps.transport.sendText(

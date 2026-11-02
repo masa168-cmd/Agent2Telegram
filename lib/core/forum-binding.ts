@@ -1,6 +1,39 @@
+import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { isAbsolute, relative, resolve } from "node:path";
 /** Structural subsets of Pi's ExtensionAPI / ExtensionContext, so this module stays agent-neutral. */
 type EntryAppender = { appendEntry(customType: string, data?: unknown): void };
 type SessionEntries = { sessionManager: { getSessionId(): string; getEntries(): readonly unknown[] } };
+
+/** A short, non-reversible id of a Bot token (file and directory names). */
+export function telegramTokenHash(token: string): string {
+  return createHash("sha256").update(token).digest("hex").slice(0, 24);
+}
+
+/** Telegram's public numeric Bot id survives token rotation; no secret enters a binding. */
+export function forumBotId(token: string): string {
+  const id = token.match(/^(\d+):/)?.[1];
+  return id ? `telegram:${id}` : `token-hash:${telegramTokenHash(token)}`;
+}
+
+/** One forum topic per Bot + group + canonical launch directory. */
+export function forumTopicKey(botId: string, chatId: number, cwdKey: string): string {
+  return JSON.stringify([botId, chatId, cwdKey]);
+}
+
+/** The topic identity: the resolved launch directory (symlinks collapse to one topic). */
+export function canonicalCwd(cwd: string | undefined): string {
+  const absolute = resolve(cwd ?? process.cwd());
+  try { return realpathSync(absolute); } catch { return absolute; }
+}
+
+/** Home-relative directory name, e.g. `pi-main` or `work/tmp`; `~` for home, absolute outside it. */
+export function forumTopicName(cwd: string, home = homedir()): string {
+  const rel = relative(home, cwd);
+  const name = cwd === home ? "~" : rel && !rel.startsWith("..") && !isAbsolute(rel) ? rel : cwd;
+  return name.slice(0, 128);
+}
 
 /** Session-wide extension metadata, never model context or a Telegram token. */
 export const FORUM_BINDING_TYPE = "pi-telegram-plus-ex.forum-binding";

@@ -1,9 +1,9 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TelegramConfig, TelegramUpdate } from "../../core/types.ts";
-import { botKey, ClaudeGateway, SESSION_STALE_MS, type GatewayEvent } from "../gateway/gateway.ts";
+import { botKey, BotGateway, SESSION_STALE_MS, type GatewayEvent } from "../bot-gateway.ts";
 
 const CHAT = -1001234567890;
 const USER = 4242;
@@ -17,7 +17,8 @@ afterEach(() => {
 });
 
 function setup(initial: TelegramConfig = { botToken: TOKEN, forumChatId: CHAT, allowedUserId: USER },
-  options: { dataDir?: string; alive?: (pid: number) => boolean; isEnabled?: (cwd: string) => boolean } = {}) {
+  options: { dataDir?: string; alive?: (pid: number) => boolean; isEnabled?: (cwd: string) => boolean;
+    rich?: boolean; topicsPath?: string } = {}) {
   const dataDir = options.dataDir ?? mkdtempSync(join(tmpdir(), "claude-gateway-"));
   if (!options.dataDir) dirs.push(dataDir);
   let config: TelegramConfig = { ...initial };
@@ -41,7 +42,7 @@ function setup(initial: TelegramConfig = { botToken: TOKEN, forumChatId: CHAT, a
   const editText = vi.fn(async (_chatId: number, _messageId: number, _text: string) => undefined);
   const answerCallbackQuery = vi.fn(async (_id: string, _text?: string) => undefined);
   const startRestart = vi.fn();
-  const gateway = new ClaudeGateway({
+  const gateway = new BotGateway({
     dataDir,
     getConfig: () => config,
     api: api as never,
@@ -51,6 +52,8 @@ function setup(initial: TelegramConfig = { botToken: TOKEN, forumChatId: CHAT, a
     readArgv: () => ["/usr/bin/claude", "--permission-mode", "auto"],
     isPidAlive: options.alive ?? (() => true),
     ...(options.isEnabled ? { isEnabled: options.isEnabled } : {}),
+    ...(options.rich ? { mode: "rich" as const, agentLabel: "Pi" } : {}),
+    ...(options.topicsPath ? { topicsPath: options.topicsPath } : {}),
     typingIntervalMs: 1_000,
   });
   return { gateway, dataDir, sent, buttons, api, sendText, sendChatAction, editText, answerCallbackQuery, startRestart,
@@ -67,17 +70,18 @@ function tap(data: string, from = USER): TelegramUpdate {
     message: { message_id: 501, chat: { id: CHAT, type: "supergroup" } } } } as TelegramUpdate;
 }
 
-async function events(gateway: ClaudeGateway, connId: string): Promise<GatewayEvent[]> {
+async function events(gateway: BotGateway, connId: string): Promise<GatewayEvent[]> {
   const reply = await gateway.poll(connId, 0);
   return "events" in reply ? reply.events.filter(e => e.type !== "log") : [];
 }
 
-describe("ClaudeGateway sessions and topics", () => {
+describe("BotGateway sessions and topics", () => {
   it("gives each directory its own topic and keeps it across gateway restarts", async () => {
     const t = setup();
     expect(await t.gateway.open({ connId: "a", cwd: "/work/alpha" })).toMatchObject({ ok: true, threadId: 77 });
     expect(await t.gateway.open({ connId: "b", cwd: "/work/beta" })).toMatchObject({ ok: true, threadId: 78 });
-    expect(t.api).toHaveBeenCalledWith("createForumTopic", { chat_id: CHAT, name: "alpha" });
+    // The topic is named by the home-relative path (absolute outside home).
+    expect(t.api).toHaveBeenCalledWith("createForumTopic", { chat_id: CHAT, name: "/work/alpha" });
     const stored = JSON.parse(readFileSync(join(t.dataDir, "runtime", "topics.json"), "utf8"));
     expect(Object.keys(stored.topics)).toContain(JSON.stringify([botKey(TOKEN), CHAT, "/work/alpha"]));
 
@@ -189,7 +193,7 @@ describe("ClaudeGateway sessions and topics", () => {
   });
 });
 
-describe("ClaudeGateway commands", () => {
+describe("BotGateway commands", () => {
   it("turns /stop /compact /clear /usage into events and answers the rest with a notice", async () => {
     const t = setup();
     await t.gateway.open({ connId: "a", cwd: "/work/alpha" });
@@ -226,7 +230,7 @@ describe("ClaudeGateway commands", () => {
   });
 });
 
-describe("ClaudeGateway answers", () => {
+describe("BotGateway answers", () => {
   it("sends the final answer as HTML to the session's topic and stops typing", async () => {
     vi.useFakeTimers();
     const t = setup();
@@ -258,7 +262,7 @@ describe("ClaudeGateway answers", () => {
   });
 });
 
-describe("ClaudeGateway buttons", () => {
+describe("BotGateway buttons", () => {
   async function withPrompt(labels = ["✅ 允许", "❌ 拒绝"], textLabel?: string) {
     const t = setup();
     await t.gateway.open({ connId: "a", cwd: "/work/alpha" });
@@ -333,5 +337,76 @@ describe("ClaudeGateway buttons", () => {
     expect(await t.gateway.openPrompt("a", "p1", "Q", "", ["Yes", "No"])).toBe(false);
     expect(await t.gateway.openPrompt("zzz", "p2", "Q", "", ["Yes", "No"])).toBe(false);
     expect(t.buttons).toEqual([]);
+  });
+});
+
+describe("BotGateway rich mode (Pi)", () => {
+  async function raw(gateway: BotGateway, connId: string): Promise<TelegramUpdate[]> {
+    const reply = await gateway.poll(connId, 0);
+    return "events" in reply ? reply.events.flatMap(e => e.type === "update" ? [e.update] : []) : [];
+  }
+
+  it("hands the raw update of a session's topic to that session, commands included", async () => {
+    const t = setup(undefined, { rich: true });
+    await t.gateway.open({ connId: "a", cwd: "/work/alpha" });
+    await t.gateway.open({ connId: "b", cwd: "/work/beta" });
+    const slash = topicMessage("/model", 77);
+    await t.gateway.handleUpdate(slash);
+    await t.gateway.handleUpdate(topicMessage("for beta", 78));
+    await t.gateway.handleUpdate(topicMessage("not you", 77, 1));
+    expect(await raw(t.gateway, "a")).toEqual([slash]);
+    expect((await raw(t.gateway, "b")).map(u => u.message?.text)).toEqual(["for beta"]);
+    expect(t.sent).toEqual([]);
+  });
+
+  it("routes a callback by its thread, or by a reported button message when the thread is missing", async () => {
+    const t = setup(undefined, { rich: true });
+    await t.gateway.open({ connId: "a", cwd: "/work/alpha" });
+    await t.gateway.open({ connId: "b", cwd: "/work/beta" });
+    await t.gateway.poll("b", 0, [501]);
+    const threadless = tap("x:1");
+    await t.gateway.handleUpdate(threadless);
+    const [delivered] = await raw(t.gateway, "b");
+    expect(delivered?.callback_query?.data).toBe("x:1");
+    expect(delivered?.callback_query?.message?.message_thread_id).toBe(78);
+    expect(await raw(t.gateway, "a")).toEqual([]);
+  });
+
+  it("says so in a topic whose Pi is offline, and answers a stale button", async () => {
+    const t = setup(undefined, { rich: true });
+    await t.gateway.open({ connId: "a", cwd: "/work/alpha" });
+    t.gateway.close("a");
+    await t.gateway.handleUpdate(topicMessage("anyone?"));
+    expect(t.sent.at(-1)?.text).toContain("Pi 会话");
+    await t.gateway.handleUpdate(tap("x:1"));
+    expect(t.answerCallbackQuery).toHaveBeenLastCalledWith("cb1", "已过期");
+  });
+
+  it("still pairs in a private chat", async () => {
+    const t = setup({ botToken: TOKEN, forumChatId: CHAT, pairingCode: "123456", pairingCodeExpiresAt: Date.now() + 60_000 }, { rich: true });
+    await t.gateway.handleUpdate({ update_id: 2, message: { message_id: 1, chat: { id: USER, type: "private" },
+      from: { id: USER }, text: "/pair 123456" } } as TelegramUpdate);
+    expect(t.getConfig().allowedUserId).toBe(USER);
+  });
+
+  it("adopts the topic a session already knew instead of creating one", async () => {
+    const t = setup(undefined, { rich: true });
+    expect(await t.gateway.open({ connId: "a", cwd: "/work/alpha", legacyThreadId: 135 })).toMatchObject({ ok: true, threadId: 135 });
+    expect(t.api).not.toHaveBeenCalled();
+  });
+
+  it("reads Pi's existing topic map, and treats an unknown-result create as absent", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-topics-"));
+    dirs.push(dir);
+    const topicsPath = join(dir, "tg-runtime", "abc", "topics.json");
+    mkdirSync(join(dir, "tg-runtime", "abc"), { recursive: true });
+    writeFileSync(topicsPath, JSON.stringify({ version: 1, topics: {
+      [JSON.stringify([botKey(TOKEN), CHAT, "/work/alpha"])]: { threadId: 604, cwd: "/work/alpha", updatedAt: "x" },
+      [JSON.stringify([botKey(TOKEN), CHAT, "/work/beta"])]: { threadId: null, state: "create-unknown", cwd: "/work/beta", updatedAt: "x" },
+    } }));
+    const t = setup(undefined, { rich: true, topicsPath });
+    expect(await t.gateway.open({ connId: "a", cwd: "/work/alpha" })).toMatchObject({ ok: true, threadId: 604 });
+    expect(await t.gateway.open({ connId: "b", cwd: "/work/beta" })).toMatchObject({ ok: true, threadId: 77 });
+    expect(t.api).toHaveBeenCalledTimes(1);
   });
 });

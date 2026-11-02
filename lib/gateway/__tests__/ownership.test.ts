@@ -2,8 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { telegramTokenHash } from "../../core/instance-coordinator.ts";
-import { claimBot } from "../gateway/ownership.ts";
+import { telegramTokenHash } from "../../core/forum-binding.ts";
+import { claimBot } from "../ownership.ts";
 
 const TOKEN = "123456:abc";
 

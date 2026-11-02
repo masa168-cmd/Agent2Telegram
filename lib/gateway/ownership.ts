@@ -3,9 +3,9 @@
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { a2tHome } from "../../core/a2t-home.ts";
-import { getAgentDir } from "../../core/data-dir.ts";
-import { telegramTokenHash } from "../../core/instance-coordinator.ts";
+import { a2tHome } from "../core/a2t-home.ts";
+import { getAgentDir } from "../core/data-dir.ts";
+import { telegramTokenHash } from "../core/forum-binding.ts";
 
 export type AgentName = "pi" | "claude" | "codex";
 export type OwnershipResult = { ok: true } | { ok: false; reason: string };

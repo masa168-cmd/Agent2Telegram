@@ -123,7 +123,7 @@ describe("/tg multi-level menu", () => {
       },
       isTelegramEnabled: () => config.telegramEnabled === true,
       transport: {} as any,
-      getPolling: () => ({
+      getConnection: () => ({
         start: () => { pollingActive = true; },
         stop: async () => { pollingActive = false; },
         isActive: () => pollingActive,
@@ -144,13 +144,8 @@ describe("/tg multi-level menu", () => {
     };
 
     switchDeps = {
-      getCoordinator: () => undefined,
-      getCurrentChatId: () => undefined,
-      stopPolling: async () => { pollingActive = false; },
-      startPolling: () => { pollingActive = true; },
-      requestReconcile: () => undefined,
-      getCurrentTurn: () => undefined,
-      pendingHandoffs: new Set<string>(),
+      listSessions: async () => [],
+      getForumChatId: () => config.forumChatId,
     };
 
     registerTgMenuCommand(
@@ -203,14 +198,9 @@ describe("/tg multi-level menu", () => {
     expect(options).toContain("🧵 Online sessions");
   });
 
-  it("lets a follower list online topic links without switching the polling leader or replaying history", async () => {
+  it("lists the online sessions from the gateway and shows the chosen topic's link", async () => {
     config = { forumChatId: -100123 };
-    const switchTo = vi.fn();
-    const coordinator = { instanceId: "self", isActive: () => false, switchTo,
-      listInstances: async () => [{ id: "other", cwd: "/fake/other", sessionId: "session-b",
-        forum: { botId: "b", chatId: -100123, sessionId: "session-b", threadId: 22,
-          generation: "b1", port: 1234, capability: "fake-local-capability-for-tests-only" } }] };
-    switchDeps.getCoordinator = () => coordinator as any;
+    switchDeps.listSessions = async () => [{ cwd: "/fake/other", sessionId: "session-b", threadId: 22 }];
     let calls = 0;
     const notify = vi.fn();
     const ui = { notify, select: vi.fn(async (_title: string, options: string[]) => {
@@ -218,7 +208,6 @@ describe("/tg multi-level menu", () => {
     }) };
     await commands.get("tg")!("", makeCtx(ui));
     expect(notify).toHaveBeenCalledWith("https://t.me/c/123/22", "info");
-    expect(switchTo).not.toHaveBeenCalled();
   });
 
   it("Close exits the menu immediately", async () => {
@@ -423,7 +412,6 @@ describe("/tg multi-level menu", () => {
     const expected: Record<TelegramConnectionState, string> = {
       "connected": "🟢 Connected → Disconnect",
       "connecting": "🔄 Connecting → Disconnect",
-      "other-instance": "🟡 In use by another instance",
       "disconnected": "⚪ Disconnected → Connect",
     };
     for (const state of Object.keys(expected) as TelegramConnectionState[]) {
@@ -435,19 +423,6 @@ describe("/tg multi-level menu", () => {
     }
   });
 
-  it("Project → In use by another instance → click only notifies", async () => {
-    const bot = makeBot({ name: "other-bot", token: "t-o" });
-    await addBot(bot);
-    connectionStateValue = "other-instance";
-    const { ui, notifyCalls } = makeScriptedUi({
-      select: ["📁 Project", "🟡 In use by another instance", "⬅️ Back", "❌ Close"],
-    });
-    await commands.get("tg")!("", makeCtx(ui));
-    expect(notifyCalls.some((c) => c.message.includes("Another pi instance is serving this bot"))).toBe(true);
-    expect(ui.confirm).not.toHaveBeenCalled();
-    expect(awaitReconcileCalls).toBe(0);
-  });
-
   it("Project → no usable bot → only the Bot item (no connection row)", async () => {
     const { ui } = makeScriptedUi({ select: ["📁 Project", "⬅️ Back", "❌ Close"] });
     await commands.get("tg")!("", makeCtx(ui));
@@ -455,31 +430,13 @@ describe("/tg multi-level menu", () => {
     expect(options).toEqual(["Bot: not set", "⬅️ Back"]);
   });
 
-  it("Project → a { enabled: false } disconnect record follows the default bot and offers no Unbind", async () => {
-    const bot = makeBot({ name: "default-bot", token: "t-d" });
+  it("Project → the Bot row only explains: each agent uses its default Bot", async () => {
+    const bot = makeBot({ name: "only-bot", token: "t-only" });
     await addBot(bot);
-    await writeProjectBinding(projectDir, { enabled: false });
-    const { ui } = makeScriptedUi({
-      select: ["📁 Project", "Bot: default-bot (default)", "⬅️ Back", "⬅️ Back", "❌ Close"],
-    });
+    const { ui, notifyCalls } = makeScriptedUi({ select: ["📁 Project", "Bot: only-bot (default)", "⬅️ Back", "❌ Close"] });
     await commands.get("tg")!("", makeCtx(ui));
-    const bindCall = ui.select.mock.calls[2]; // bot picker after clicking the binding row
-    expect(bindCall[0]).toBe("Bind project to bot");
-    expect(bindCall[1]).not.toContain("Unbind");
-  });
-
-  it("Project → Bot → pick bot → writes .pi/telegram.json", async () => {
-    const bot = makeBot({ name: "bind-bot", token: "t-b" });
-    await addBot(bot);
-    const botChoice = botChoiceFull(bot, true);
-    const { ui, notifyCalls } = makeScriptedUi({
-      select: ["📁 Project", "Bot: bind-bot (default)", botChoice, "⬅️ Back", "❌ Close"],
-    });
-    await commands.get("tg")!("", makeCtx(ui));
-    const binding = await readProjectBinding(projectDir);
-    expect(binding?.binding.botId).toBe(bot.id);
-    expect(binding?.binding.enabled).toBe(true);
-    expect(notifyCalls.some((c) => c.message.includes("Project bound to bot"))).toBe(true);
+    expect(notifyCalls.some((c) => c.message.includes("a2t setup pi"))).toBe(true);
+    expect(ui.select.mock.calls.some((call: unknown[]) => call[0] === "Bind project to bot")).toBe(false);
   });
 
   it("Project → ⚪ Disconnected → Connect re-enables, awaits reconcile, new notice", async () => {
@@ -532,20 +489,6 @@ describe("/tg multi-level menu", () => {
     expect(awaitReconcileCalls).toBe(0);
   });
 
-  it("Project → Bot → Unbind → confirms and removes binding", async () => {
-    const bot = makeBot({ name: "unbind-bot", token: "t-u" });
-    await addBot(bot);
-    await writeProjectBinding(projectDir, { botId: bot.id, enabled: true });
-    const { ui, notifyCalls } = makeScriptedUi({
-      select: ["📁 Project", "Bot: unbind-bot", "Unbind", "⬅️ Back", "❌ Close"],
-      confirm: [true],
-    });
-    await commands.get("tg")!("", makeCtx(ui));
-    const binding = await readProjectBinding(projectDir);
-    expect(binding).toBeUndefined();
-    expect(notifyCalls.some((c) => c.message.includes("Removed Telegram project binding"))).toBe(true);
-  });
-
   it("Config → Tool → sets tool level", async () => {
     // Config menu → select "🔧 Tool: brief" → pickRenderLevel shows ["  hidden", "● brief", "  full"]
     // We pick "  full" (non-current = two-space prefix)
@@ -556,17 +499,6 @@ describe("/tg multi-level menu", () => {
 
     expect(config.tool).toBe("full");
     expect(notifyCalls.some((c) => c.message.includes("Tool") && c.message.includes("full"))).toBe(true);
-  });
-
-  it("Config → Thinking → sets thinking level", async () => {
-    // pickRenderLevel shows ["  hidden", "● brief", "  full"] — we pick "  hidden"
-    const { ui, notifyCalls } = makeScriptedUi({
-      select: ["⚙️ Config", "💭 Thinking: brief", "  hidden", "⬅️ Back", "❌ Close"],
-    });
-    await commands.get("tg")!("", makeCtx(ui));
-
-    expect(config.thinking).toBe("hidden");
-    expect(notifyCalls.some((c) => c.message.includes("Thinking") && c.message.includes("hidden"))).toBe(true);
   });
 
   it("Config → Retry → sets retry count", async () => {
@@ -618,12 +550,12 @@ describe("/tg multi-level menu", () => {
     expect(notifyCalls.some((c) => c.message.includes("No bots registered"))).toBe(true);
   });
 
-  it("Switch instance with no coordinator shows error", async () => {
+  it("Online sessions with nobody online says so", async () => {
     const { ui, notifyCalls } = makeScriptedUi({
-      select: ["🔄 Switch instance", "❌ Close"],
+      select: ["🧵 Online sessions", "❌ Close"],
     });
     await commands.get("tg")!("", makeCtx(ui));
-    expect(notifyCalls.some((c) => c.message.includes("not the active Telegram instance"))).toBe(true);
+    expect(notifyCalls.some((c) => c.message.includes("没有在线的 Pi 会话"))).toBe(true);
   });
 
   it("Pairing page (unpaired): shows pairing instructions, New pairing code swaps the code", async () => {
@@ -734,7 +666,8 @@ describe("buildConfigMenuOptions", () => {
     const options = buildConfigMenuOptions({}, thinkingSession, "pi");
     expect(options.some((o) => o.startsWith("🧠 Thinking level:"))).toBe(false);
     // The rest of the Config menu is unchanged on pi.
-    expect(options).toContain("💭 Thinking: brief");
+    expect(options).toContain("🔧 Tool: brief");
+    expect(options.some((o) => o.startsWith("💭 Thinking:") || o.startsWith("🐚 Shell confirm:"))).toBe(false);
     expect(options.at(-1)).toBe("⬅️ Back");
   });
 

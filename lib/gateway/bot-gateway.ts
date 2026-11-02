@@ -1,10 +1,10 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
-import { forumTopicKey, telegramTokenHash } from "../../core/instance-coordinator.ts";
-import { escapeHtml } from "../../core/html.ts";
-import { markdownToTelegramHtml } from "../../core/markdown.ts";
-import { authorizeTelegramUser, formatPairingInstructions } from "../../core/pairing.ts";
-import type { TelegramConfig, TelegramTransport, TelegramUpdate } from "../../core/types.ts";
+import { join, resolve } from "node:path";
+import { forumBotId, forumTopicKey, forumTopicName } from "../core/forum-binding.ts";
+import { escapeHtml } from "../core/html.ts";
+import { markdownToTelegramHtml } from "../core/markdown.ts";
+import { authorizeTelegramUser, formatPairingInstructions } from "../core/pairing.ts";
+import type { TelegramConfig, TelegramTransport, TelegramUpdate } from "../core/types.ts";
 import { runtimeDir } from "./paths.ts";
 import type { RestartJob } from "./restart-helper.ts";
 
@@ -15,7 +15,9 @@ export type GatewayEvent =
   | { type: "command"; name: "compact" | "clear" }
   | { type: "usage" }
   | { type: "restart" }
-  | { type: "log"; text: string };
+  | { type: "log"; text: string }
+  /** Rich clients (Pi) get the raw update of their topic and handle it themselves. */
+  | { type: "update"; update: TelegramUpdate };
 
 /** What a waiter on an approval or a question gets back. */
 export type PendingResult = { answer: string } | { cancelled: true } | { pending: true };
@@ -30,6 +32,8 @@ export type OpenRequest = {
   pid?: number;
   pane?: string;
   modDir?: string;
+  /** A topic the session already knew (Pi's per-session record): adopted when the directory has none. */
+  legacyThreadId?: number;
 };
 
 /** `quiet`: the directory is simply not enabled; the session stays idle without a notice. */
@@ -46,6 +50,16 @@ export const MENU_COMMANDS = [
 
 export type GatewayDeps = {
   dataDir: string;
+  /**
+   * `thin`: the gateway reads the topic for the client (Claude Code: prompts,
+   * commands, buttons). `rich`: it hands the client the raw updates of its topic
+   * and the client answers Telegram itself (Pi).
+   */
+  mode?: "thin" | "rich";
+  /** Shown in notices: "Claude Code", "Pi". */
+  agentLabel?: string;
+  /** Where the directory → topic map lives (default `<dataDir>/runtime/topics.json`). */
+  topicsPath?: string;
   getConfig: () => TelegramConfig;
   api: <T>(method: string, body: Record<string, unknown>) => Promise<T>;
   transport: Pick<TelegramTransport, "sendText" | "sendChatAction" | "sendButtons" | "editText" | "answerCallbackQuery">;
@@ -62,7 +76,8 @@ export type GatewayDeps = {
   typingIntervalMs?: number;
 };
 
-type TopicStore = { version: 1; topics: Record<string, { threadId: number; cwd: string; updatedAt: string }> };
+/** Pi's older store may hold `threadId: null` for a create whose result was unknown: read as absent. */
+type TopicStore = { version: 1; topics: Record<string, { threadId: number | null; cwd: string; updatedAt: string; state?: string }> };
 
 type Session = OpenRequest & {
   cwd: string;
@@ -71,6 +86,8 @@ type Session = OpenRequest & {
   waiter?: (events: GatewayEvent[]) => void;
   lastSeenAt: number;
   typing?: ReturnType<typeof setInterval>;
+  /** Rich clients report the button messages they sent, for callbacks that come without a thread. */
+  messageIds: Set<number>;
 };
 
 type Pending = {
@@ -95,11 +112,8 @@ const UNSUPPORTED_COMMAND_TEXT = "暂不支持这个命令。可用：/stop /com
 const RESTART_NEEDS_TMUX_TEXT = "只有在 tmux 里运行 ctg 时才能用 /restart。Claude Code 没有退出。";
 const PRIVATE_AFTER_PAIRING_TEXT = "已配对。请在论坛群里对应目录的话题中和我对话。";
 
-/** Same key shape as the Pi adapter: `telegram:<bot id>`, else a token hash. */
-export function botKey(token: string): string {
-  const id = token.match(/^(\d+):/)?.[1];
-  return id ? `telegram:${id}` : `token-hash:${telegramTokenHash(token)}`;
-}
+/** Same key as the Pi adapter: `telegram:<bot id>`, else a token hash. */
+export const botKey = forumBotId;
 
 function isThreadGone(error: unknown): boolean {
   return /thread not found|TOPIC_DELETED|TOPIC_CLOSED/i.test(error instanceof Error ? error.message : String(error));
@@ -110,11 +124,10 @@ function defaultPidAlive(pid: number): boolean {
 }
 
 /**
- * The only Telegram poller for one Bot. Each Claude Code session connects,
- * gets the forum topic of its launch directory, and polls for what Telegram
- * sent there; its answers, buttons and notices go back to that topic.
+ * The only Telegram poller for one Bot. Each agent session connects, gets the
+ * forum topic of its launch directory, and polls for what Telegram sent there.
  */
-export class ClaudeGateway {
+export class BotGateway {
   private readonly sessions = new Map<string, Session>();
   private readonly pending = new Map<string, Pending>();
   /** Claude sessions that asked for /restart: say "restarted" when they open again. */
@@ -124,11 +137,13 @@ export class ClaudeGateway {
   constructor(private readonly deps: GatewayDeps) {}
 
   private now(): number { return this.deps.now?.() ?? Date.now(); }
+  private get rich(): boolean { return this.deps.mode === "rich"; }
+  private get label(): string { return this.deps.agentLabel ?? "Claude Code"; }
   private alive(pid: number): boolean { return (this.deps.isPidAlive ?? defaultPidAlive)(pid); }
 
   // ── Topics: one per launch directory, kept across restarts ──────────────
 
-  private get topicsPath(): string { return join(runtimeDir(this.deps.dataDir), "topics.json"); }
+  private get topicsPath(): string { return this.deps.topicsPath ?? join(runtimeDir(this.deps.dataDir), "topics.json"); }
 
   private async readTopics(): Promise<TopicStore> {
     try {
@@ -139,7 +154,7 @@ export class ClaudeGateway {
   }
 
   private async writeTopics(store: TopicStore): Promise<void> {
-    await mkdir(runtimeDir(this.deps.dataDir), { recursive: true, mode: 0o700 });
+    await mkdir(join(this.topicsPath, ".."), { recursive: true, mode: 0o700 });
     const tmp = `${this.topicsPath}.tmp`;
     await writeFile(tmp, JSON.stringify(store, null, 2) + "\n", { mode: 0o600 });
     await rename(tmp, this.topicsPath);
@@ -158,8 +173,13 @@ export class ClaudeGateway {
     if (!key || config.allowedUserId === undefined) return undefined;
     const store = await this.readTopics();
     const known = store.topics[key];
-    if (known) return (session.threadId = known.threadId);
-    const name = basename(session.cwd) || session.cwd;
+    if (known && typeof known.threadId === "number") return (session.threadId = known.threadId);
+    if (session.legacyThreadId !== undefined && Number.isSafeInteger(session.legacyThreadId) && session.legacyThreadId > 0) {
+      store.topics[key] = { threadId: session.legacyThreadId, cwd: session.cwd, updatedAt: new Date(this.now()).toISOString() };
+      await this.writeTopics(store);
+      return (session.threadId = session.legacyThreadId);
+    }
+    const name = forumTopicName(session.cwd);
     const created = await this.deps.api<{ message_thread_id: number }>("createForumTopic", { chat_id: config.forumChatId, name });
     store.topics[key] = { threadId: created.message_thread_id, cwd: session.cwd, updatedAt: new Date(this.now()).toISOString() };
     await this.writeTopics(store);
@@ -193,10 +213,11 @@ export class ClaudeGateway {
       const sameClaude = !!request.claudeSessionId && other.claudeSessionId === request.claudeSessionId;
       const otherGone = other.pid !== undefined && !this.alive(other.pid);
       if (sameClaude || otherGone) { this.drop(other); continue; }
-      return { ok: false, reason: "此目录已有另一个 Claude Code 会话接入 Telegram；同一目录只接一个会话。" };
+      return { ok: false, reason: `此目录已有另一个 ${this.label} 会话接入 Telegram；同一目录只接一个会话。` };
     }
     const previous = this.sessions.get(request.connId);
-    const session: Session = { ...request, cwd, queue: previous?.queue ?? [], lastSeenAt: this.now() };
+    const session: Session = { ...request, cwd, queue: previous?.queue ?? [], lastSeenAt: this.now(),
+      messageIds: previous?.messageIds ?? new Set() };
     if (previous) this.drop(previous, false);
     this.sessions.set(request.connId, session);
 
@@ -214,11 +235,16 @@ export class ClaudeGateway {
     return { ok: true, ...(session.threadId === undefined ? {} : { threadId: session.threadId }), notices };
   }
 
-  /** Long-poll: queued events at once, else wait up to `timeoutMs`. */
-  poll(connId: string, timeoutMs: number): Promise<{ events: GatewayEvent[] } | { unknown: true }> {
+  /**
+   * Long-poll: queued events at once, else wait up to `timeoutMs`. A rich client
+   * also reports the ids of button messages it sent since its last poll.
+   */
+  poll(connId: string, timeoutMs: number, messageIds: readonly number[] = []): Promise<{ events: GatewayEvent[] } | { unknown: true }> {
     const session = this.sessions.get(connId);
     if (!session) return Promise.resolve({ unknown: true });
     session.lastSeenAt = this.now();
+    for (const id of messageIds) if (Number.isSafeInteger(id) && id > 0) session.messageIds.add(id);
+    while (session.messageIds.size > 256) session.messageIds.delete(session.messageIds.values().next().value!);
     session.waiter?.([]);
     if (session.queue.length > 0) return Promise.resolve({ events: session.queue.splice(0) });
     return new Promise(done => {
@@ -248,6 +274,14 @@ export class ClaudeGateway {
 
   get sessionCount(): number { return this.sessions.size; }
 
+  /** Online sessions with their topics (Pi's "online sessions" menu). */
+  listSessions(): Array<{ cwd: string; threadId?: number; sessionId?: string; pid?: number }> {
+    return [...this.sessions.values()].map(s => ({ cwd: s.cwd,
+      ...(s.threadId === undefined ? {} : { threadId: s.threadId }),
+      ...(s.claudeSessionId === undefined ? {} : { sessionId: s.claudeSessionId }),
+      ...(s.pid === undefined ? {} : { pid: s.pid }) }));
+  }
+
   /** A notice for every connected session's own transcript (e.g. a polling conflict). */
   broadcastLog(text: string): void {
     for (const session of this.sessions.values()) this.push(session, { type: "log", text });
@@ -276,6 +310,7 @@ export class ClaudeGateway {
   // ── Telegram → sessions ─────────────────────────────────────────────────
 
   async handleUpdate(update: TelegramUpdate): Promise<void> {
+    if (this.rich && await this.handleRichUpdate(update)) return;
     if (update.callback_query) {
       await this.handleCallback(update.callback_query);
       return;
@@ -310,7 +345,7 @@ export class ClaudeGateway {
     const session = this.sessionForThread(threadId);
     if (!session) {
       const cwd = await this.topicCwd(threadId);
-      if (cwd) await this.deps.transport.sendText(chatId, escapeHtml(`目录 ${cwd} 现在没有在线的 Claude Code 会话，本条未处理。`), threadId);
+      if (cwd) await this.deps.transport.sendText(chatId, escapeHtml(`目录 ${cwd} 现在没有在线的 ${this.label} 会话，本条未处理。`), threadId);
       return;
     }
     for (const [id, entry] of this.pending) {
@@ -328,6 +363,36 @@ export class ClaudeGateway {
       else await this.deps.transport.sendText(chatId, RESTART_NEEDS_TMUX_TEXT, threadId);
     } else if (command !== undefined) await this.deps.transport.sendText(chatId, UNSUPPORTED_COMMAND_TEXT, threadId);
     else this.push(session, { type: "prompt", text });
+  }
+
+  /**
+   * Rich mode: hand an authorized update from a session's topic to that session
+   * untouched. Returns false for what the shared path still handles (private
+   * chats, so pairing works the same for every agent).
+   */
+  private async handleRichUpdate(update: TelegramUpdate): Promise<boolean> {
+    const query = update.callback_query;
+    const message = query?.message ?? update.message;
+    if (!message?.chat || message.chat.type === "private") return false;
+    const config = this.deps.getConfig();
+    const from = query?.from ?? update.message?.from;
+    if (message.chat.id !== config.forumChatId || from?.id === undefined || from.id !== config.allowedUserId) return true;
+    const threadId = message.message_thread_id;
+    const session = threadId !== undefined ? this.sessionForThread(threadId)
+      : query ? [...this.sessions.values()].find(s => s.messageIds.has(message.message_id)) : undefined;
+    if (!session) {
+      const cwd = threadId === undefined ? undefined : await this.topicCwd(threadId);
+      const text = `目录 ${cwd} 现在没有在线的 ${this.label} 会话，本条未处理。`;
+      if (query) await this.deps.transport.answerCallbackQuery(query.id, cwd ? text.slice(0, 180) : "已过期");
+      else if (cwd) await this.deps.transport.sendText(config.forumChatId!, escapeHtml(text), threadId);
+      return true;
+    }
+    // Telegram can omit the thread on callbacks: restore it from the session's own message.
+    const routed = query && threadId === undefined
+      ? { ...update, callback_query: { ...query, message: { ...message, message_thread_id: session.threadId } } }
+      : update;
+    this.push(session, { type: "update", update: routed });
+    return true;
   }
 
   /** Register the "/" menu for the forum group only. */

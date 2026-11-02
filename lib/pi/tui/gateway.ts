@@ -8,7 +8,6 @@
 import { escapeHtml } from "../../core/html.ts";
 import { log } from "../../core/logger.ts";
 import type { TelegramTransport } from "../../core/types.ts";
-import { checkpointCurrentUpdateCursor } from "../../core/polling.ts";
 import { queuePendingNotice } from "../../core/pending-notices.ts";
 import type { TuiBridgeAdapter } from "../tui-bridge.ts";
 import type { Origin, OriginTracker } from "./origin.ts";
@@ -150,11 +149,6 @@ export class CommandGateway {
       ackHtml,
     });
 
-    // Session-replacing commands (/fork, /clone, /resume, ...) reactivate the
-    // plugin in-process; the replacement runtime re-reads the on-disk cursor and
-    // Telegram re-serves this update while it is still unconfirmed, re-running the
-    // command. Commit the cursor before submitting. No-op outside an update.
-    await checkpointCurrentUpdateCursor();
     if (!this.deps.isEnabled()) {
       this.deps.output.finish();
       this.deps.origin.end(scope, "error");
@@ -203,10 +197,6 @@ export class CommandGateway {
     if (messageId === undefined) return true;
     const draft = (this.deps.readDraft ?? readEditorText)();
     try {
-      // /new replaces the session in-process; the replacement runtime re-reads
-      // the cursor, so commit this update before the destructive call or the
-      // unconfirmed /new is re-served and run a second time.
-      await checkpointCurrentUpdateCursor();
       if (!this.deps.isEnabled()) return true;
       const result = await this.deps.newSession!(request.origin);
       if (result && "cancelled" in result && result.cancelled) {

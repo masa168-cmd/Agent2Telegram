@@ -1,5 +1,5 @@
 import { join, resolve } from "node:path";
-import { agentDataDir } from "../../core/a2t-home.ts";
+import { agentDataDir } from "../core/a2t-home.ts";
 
 /** Data directory of the Claude Code adapter: `$CLAUDE_TELEGRAM_DIR`, else `~/.agent2telegram/claude`. */
 export function claudeTelegramDir(): string {

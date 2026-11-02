@@ -160,22 +160,21 @@ describe("dialog callback dispatch", () => {
     ));
   });
 
-  it("keeps shell input on the bash path", async () => {
+  it("refuses shell input: it neither runs nor reaches the model as a prompt", async () => {
     const runText = vi.spyOn(CommandGateway.prototype, "runText").mockResolvedValue(true);
     try {
       const harness = createHarness();
 
       await harness.controller.handleMessage({
         message_id: 61,
-        chat: { id: 42, type: "private" },
+        chat: { id: -100123, type: "supergroup" },
         from: { id: 7 },
+        message_thread_id: 3,
         text: "!echo hi",
       });
 
-      await vi.waitFor(() => expect(runText).toHaveBeenCalledWith(expect.objectContaining({
-        text: "!echo hi",
-        label: "!",
-      })));
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(runText).not.toHaveBeenCalled();
       expect(harness.session.prompt).not.toHaveBeenCalled();
       expect(harness.session.executeBash).not.toHaveBeenCalled();
     } finally {

@@ -5,7 +5,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { createActiveTelegramTransport } from "./lib/core/active-transport.ts";
 import { a2tCacheDir } from "./lib/core/a2t-home.ts";
 import { registerTelegramAttachmentTool } from "./lib/pi/attachments.ts";
-import { enableConfiguredTelegramOnStartup, readResolvedTelegramConfig, persistProjectRuntimeState, updateBot, getAgentDir } from "./lib/core/config.ts";
+import { enableConfiguredTelegramOnStartup, readResolvedTelegramConfig, persistProjectRuntimeState, getAgentDir } from "./lib/core/config.ts";
 import { createTelegramController, type TelegramCommandHandler } from "./lib/pi/controller.ts";
 import { escapeHtml } from "./lib/core/html.ts";
 import { createHeartbeat } from "./lib/core/heartbeat.ts";
@@ -21,14 +21,12 @@ import { createForumTelegramTransport } from "./lib/pi/forum-transport.ts";
 import { forumTopicLink, sameForumTarget } from "./lib/core/forum-binding.ts";
 import { deliverPendingNotices } from "./lib/core/pending-notices.ts";
 import { initLogger, log, type LogLevel } from "./lib/core/logger.ts";
-import { authorizeTelegramUser } from "./lib/core/pairing.ts";
 import { getCurrentTelegramTurn } from "./lib/core/turn-context.ts";
 
 import { registerAllCommands } from "./lib/pi/commands/register.ts";
 import { registerTgMenuCommand } from "./lib/pi/commands/tg-menu.ts";
 import { registerContextBudgetCommand } from "./lib/pi/commands/context-budget.ts";
 import { ContextBudgetRuntime } from "./lib/pi/context-budget/runtime.ts";
-import type { TelegramConnectionState } from "./lib/pi/commands/telegram-commands.ts";
 import { syncTelegramCommands, scheduleTelegramCommandRefresh, cancelTelegramCommandRefreshes, getTelegramCommandKeyboard } from "./lib/pi/menu-commands.ts";
 import { installTuiBridge, tuiBridge, getTuiCommands } from "./lib/pi/tui-bridge.ts";
 import { SecretStore } from "./lib/pi/tui/secrets.ts";
@@ -69,7 +67,6 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
   const runtimeState = getTelegramPlusRuntimeState();
 
   let config: TelegramConfig = {};
-  let pairingFailures: { code?: string; count: number } = { count: 0 };
   let resolvedConfig: ResolvedTelegramConfig | undefined;
   let sessionContext: ExtensionContext | undefined;
   let announcedForumLease: string | undefined;
@@ -163,8 +160,6 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
     onError: error => { indexLog.warn("Forum session unavailable", { error }); refreshStatus(); },
     onUpdate: async ({ update }) => {
       if (disposed || !forum.isCurrentOperation()) return;
-      // Pairing happens in the gateway; pick up the paired user it wrote to tg.json.
-      if (config.allowedUserId === undefined) switchResolvedConfig(await readResolvedTelegramConfig(currentSessionCwd()));
       try {
         if (update.callback_query) await controller.handleCallbackQuery(update.callback_query);
         if (update.message) await controller.handleMessage(update.message);
@@ -259,8 +254,8 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
     getActiveTurn: getCurrentActiveTurn,
   });
 
-  // /tg multi-level menu — the single entry point for bot / project /
-  // instance management (Bots / Project / Commands / Config / Switch instance).
+  // /tg menu: Pi's own items (Commands / Config / Online sessions / Debug info).
+  // Bots, pairing and per-folder connect/disconnect are managed by `a2t`.
   let runCommandFromMenu: ((name: string, args: string) => Promise<void>) | undefined;
   registerTgMenuCommand({
     registerCommand: (name: string, options: { description?: string; handler: TelegramCommandHandler }) => {
@@ -271,19 +266,6 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
     },
   }, {
     getConfig: () => config,
-    setConfig,
-    persistConfig: persistCurrentConfig,
-    getResolvedConfig: () => resolvedConfig,
-    switchResolvedConfig,
-    isTelegramEnabled,
-    transport,
-    getConnection: () => connection,
-    refreshStatus,
-    syncTelegramCommands: () => syncTelegramCommands(config.botToken, pi),
-    startStatusHeartbeat: () => heartbeat.startStatusHeartbeat(refreshStatus),
-    clearStatusError: () => { lastStatusError = undefined; },
-    connectionState,
-    awaitReconcile,
   }, tgConfigDeps, {
     listSessions: () => forum.listSessions(),
     getForumChatId: () => config.forumChatId,
@@ -341,41 +323,9 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
     secrets: secretStore,
   });
 
-  // Shared by the controller (private-chat mode) and the forum receiver (an
-  // unpaired forum Bot accepts /pair only in a private chat).
-  const authorizeUser = async (userId: number | undefined, text?: string, chatType?: string): Promise<boolean | "paired"> => {
-    // Wrong /pair attempts are counted per code in memory; a new code starts at 0.
-    const failures = pairingFailures.code === config.pairingCode ? pairingFailures.count : 0;
-    const decision = authorizeTelegramUser(config, userId, text, config.botUsername, { chatType, failures });
-    pairingFailures = { code: decision.config.pairingCode, count: decision.failures };
-    if (decision.invalidated) {
-      config = decision.config;
-      if (resolvedConfig?.bot) {
-        await updateBot(resolvedConfig.bot.id, { pairingCode: undefined, pairingCodeExpiresAt: undefined })
-          .catch(indexLog.swallow("warn", "persist invalidated pairing code failed"));
-      }
-      getActiveSession()?.extensionRunner.getUIContext().notify(
-        "Telegram pairing code was cancelled (expired or too many wrong attempts). Generate a new one via /tg → Bots.", "warning");
-      refreshStatus();
-      return false;
-    }
-    if (!decision.authorized) return false;
-    if (decision.config !== config) {
-      config = decision.config;
-      await persistCurrentConfig(config);
-      // v3: allowedUserId is bot identity (registry), not a project-binding
-      // field. persistCurrentConfig writes only the project binding, so on a
-      // successful /pair we must also write allowedUserId to the bot record
-      // or the pairing is lost on restart.
-      if (decision.paired && resolvedConfig?.bot && decision.config.allowedUserId !== undefined) {
-        await updateBot(resolvedConfig.bot.id, { allowedUserId: decision.config.allowedUserId, pairingCode: undefined, pairingCodeExpiresAt: undefined })
-          .catch(indexLog.swallow("warn", "persist paired allowedUserId to bot registry failed"));
-        switchResolvedConfig(await readResolvedTelegramConfig(currentSessionCwd()));
-      }
-      refreshStatus();
-    }
-    return decision.paired ? "paired" : true;
-  };
+  // Only the user set by `a2t setup` may operate this session.
+  const authorizeUser = async (userId: number | undefined): Promise<boolean> =>
+    userId !== undefined && userId === config.allowedUserId;
 
   const controller = createTelegramController({
     getSession: getOperationSession,
@@ -450,13 +400,6 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
     await controller.runCommand(name, args, chatId, turn?.messageThreadId ?? forum.getTarget()?.threadId, turn?.sourceMessageId);
   };
 
-  /** /tg Project → Connect / Disconnect: (re)connect this session to the gateway, or leave it. */
-  const connection = {
-    start: () => requestForumSync(),
-    stop: () => forum.close(),
-    isActive: () => !!forum.getTarget(),
-  };
-
   // Announce each new connection of this session in its topic, with the command keyboard.
   const onForumChange = (): void => {
     refreshStatus();
@@ -489,19 +432,6 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
     });
   };
 
-  /** The runtime's real Telegram connection state - same signal the status
-   *  bar uses; the /tg Project menu renders this instead of config fields. */
-  function connectionState(): TelegramConnectionState {
-    if (!config.botToken || !isTelegramEnabled()) return "disconnected";
-    return forum.getTarget() ? "connected" : "connecting";
-  }
-
-  /** Queue a reconcile and wait for it to settle: after an enable/disable the
-   *  Project menu re-renders immediately and must see the post-toggle state. */
-  function awaitReconcile(): Promise<void> {
-    requestForumSync();
-    return Promise.resolve();
-  }
 
   function buildStatusState(error?: string): Parameters<typeof formatTelegramStatusLine>[1] {
     const enabled = !!config.botToken && isTelegramEnabled();

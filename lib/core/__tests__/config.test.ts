@@ -30,7 +30,6 @@ function makeBot(overrides: Partial<BotRecord> = {}): BotRecord {
     token: overrides.token ?? "tok-1",
     ...(overrides.botUsername === undefined ? {} : { botUsername: overrides.botUsername }),
     ...(overrides.allowedUserId === undefined ? {} : { allowedUserId: overrides.allowedUserId }),
-    ...(overrides.pairingCode === undefined ? {} : { pairingCode: overrides.pairingCode }),
     ...(overrides.apiBase === undefined ? {} : { apiBase: overrides.apiBase }),
   };
 }
@@ -70,7 +69,7 @@ describe("materializeTelegramConfig", () => {
     expect(config.telegramEnabled).toBe(true);
   });
 
-  it("applies project binding prefs and runtime state", () => {
+  it("applies project binding prefs and runtime state, and ignores an old enabled:false (a2t decides)", () => {
     const bot = makeBot({ botUsername: "mybot" });
     const binding: ProjectTelegramBinding = {
       botId: bot.id,
@@ -81,7 +80,7 @@ describe("materializeTelegramConfig", () => {
       activeChatId: 123,
     };
     const config = materializeTelegramConfig(bot, binding);
-    expect(config.telegramEnabled).toBe(false);
+    expect(config.telegramEnabled).toBe(true);
     expect(config.tool).toBe("brief");
     expect(config.thinking).toBe("full");
     expect(config.lastUpdateId).toBe(99);

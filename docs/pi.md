@@ -58,7 +58,7 @@ Agent2Telegram 的 Pi 部分：面向 **Pi coding agent 1.4.0** 的 Telegram 扩
 
 ### Bot 注册表
 
-沿用 plus 的 `tg.json` 格式，位置是 `~/.agent2telegram/pi/tg.json`（显式设置 `PI_CODING_AGENT_DIR` 时用该目录；旧版的 `~/.pi/agent/tg.json` 在 `a2t migrate` 之前仍会被读取）。论坛模式下，Telegram 话题的 `/tg` 不显示全局 Bot/项目维护入口；请用 `a2t setup pi`（替换）或 **SSH 中的 `/tg` → Bots** 录入。**一个 Agent 只能有一个 Bot**（一个 Bot 下每个目录一个话题）：已有 Bot 时不能再添加，要换请先 Remove 或运行 `a2t setup pi`，再 `a2t gateway restart`。目录绑定里旧版本留下的 `botId` 会被忽略。`forumChatId` 可通过本地 Bots 的更新字段设置；关闭论坛模式用 `off`。
+沿用 plus 的 `tg.json` 格式，位置是 `~/.agent2telegram/pi/tg.json`（显式设置 `PI_CODING_AGENT_DIR` 时用该目录；旧版的 `~/.pi/agent/tg.json` 在 `a2t migrate` 之前仍会被读取）。**Bot 只用 `a2t setup pi` 配置**（Token、论坛群 ID、你的用户 ID 都必填），一个 Agent 只能有一个 Bot，重新运行即更换，然后 `a2t gateway restart`。目录是否接入只看 `a2t enable pi` / `a2t disable pi`。`/tg` 只保留 Pi 自己的项目：Commands、Config（工具消息、重试次数）、Online sessions、Debug info。目录绑定里旧版本留下的 `botId`、`enabled` 会被忽略。
 
 示例仅展示格式，尖括号必须在 SSH 中替换；不要提交文件或在聊天里发送 Token：
 
@@ -77,12 +77,12 @@ Agent2Telegram 的 Pi 部分：面向 **Pi coding agent 1.4.0** 的 Telegram 扩
 }
 ```
 
-论坛模式要求已设置有效 `allowedUserId` 和负安全整数 `forumChatId`，不接受最近一次聊天 ID 作为群配置，也不在群里进行首次凭据/操作者配对。未配对时私聊 Bot 发 `/pair <配对码>`（由网关处理）。私聊不能操作 Pi；没有有效论坛配置时 Pi 不接入 Telegram。
+需要有效的 `allowedUserId` 和负整数 `forumChatId`；缺少时网关不收这个 Bot 的消息，Pi 状态栏和 `a2t status` 会说明原因。不再有配对码和 `/pair`。私聊 Bot 只会得到「请在论坛群里对应目录的话题中和我对话」。
 
-目录绑定（是否开启、显示偏好）集中存放在 `~/.agent2telegram/pi/projects/<目录哈希>.json`，内容形如：
+目录绑定（显示偏好）集中存放在 `~/.agent2telegram/pi/projects/<目录哈希>.json`，内容形如：
 
 ```json
-{ "dir": "/home/me/project", "enabled": true, "tool": "brief", "retryCount": 3 }
+{ "dir": "/home/me/project", "tool": "brief", "retryCount": 3 }
 ```
 
 Bot 身份/群/操作者保存在注册表；项目偏好保存在项目绑定；收件游标由网关保存在 `tg-runtime/<tokenHash>/cursor.json`。**不得提交这些运行时文件**。
@@ -131,7 +131,7 @@ Pi 1.4.0 的 `SettingsManager.applyOverrides()` 会在保存主题、模型等�
 
 **这不是 Pi 官方扩展覆盖钩子，而是固定 1.4.0 的版本相关适配。** 通用 `pi.getSettings()` 仍显示原生快照，不能据它判断插件阈值；以 `/context-budget status` 的实际读取为准。其它实例覆盖、无效桥接或不支持的宿主会拒绝应用；升级 Pi 前须重新核对调用链。此功能不支持 OMP。
 
-本地设置不要求 Bot 在线，但需要现有会话/TUI 兼容桥接已经加载。首次给一个未预载桥接的 Pi 执行 `/reload` 不保证能捕获会话；实际加载方案可能需要正常重启，应单独确认。手机侧沿用配对用户、正确话题和在线会话授权，不新增 Bot 消费者或进程。
+本地设置不要求 Bot 在线，但需要现有会话/TUI 兼容桥接已经加载。首次给一个未预载桥接的 Pi 执行 `/reload` 不保证能捕获会话；实际加载方案可能需要正常重启，应单独确认。手机侧沿用允许的用户、正确话题和在线会话授权，不新增 Bot 消费者或进程。
 
 ## 离线验证
 

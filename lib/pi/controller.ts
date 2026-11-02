@@ -698,7 +698,7 @@ export function createTelegramController(deps: {
   getSession: () => CapturedAgentSession | undefined;
   transport: TelegramTransport;
   ui: TelegramUiRuntime;
-  authorizeUser(userId: number | undefined, text?: string, chatType?: string): Promise<boolean | "paired">;
+  authorizeUser(userId: number | undefined): Promise<boolean>;
   setActiveChatId(chatId: number): Promise<void>;
   getBotUsername(): string | undefined;
   telegramCommands: Map<string, TelegramCommandHandler>;
@@ -1509,14 +1509,9 @@ export function createTelegramController(deps: {
         hasTextQuote: !!message.text_quote,
         hasExternalReply: !!message.external_reply,
       });
-      const authorization = await deps.authorizeUser(message.from?.id, rawText, message.chat?.type);
-      if (!authorization || !isCurrent()) return;
+      if (!(await deps.authorizeUser(message.from?.id)) || !isCurrent()) return;
       await deps.setActiveChatId(chatId);
       if (!isCurrent()) return;
-      if (authorization === "paired") {
-        await deps.transport.sendText(chatId, "✅ Telegram user paired.", messageThreadId, sourceMessageId);
-        return;
-      }
 
       const text = normalizeLeadingCommand(rawText, deps.getBotUsername());
       const trimmed = text.trim();

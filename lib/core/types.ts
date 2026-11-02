@@ -27,10 +27,6 @@ export type BotRecord = {
   forumChatId?: number;
   botUsername?: string;
   allowedUserId?: number;
-  /** One-time local pairing code required before allowedUserId is set. */
-  pairingCode?: string;
-  /** Epoch ms after which pairingCode is rejected; missing means expired. */
-  pairingCodeExpiresAt?: number;
   /** Override the Telegram Bot API base URL (e.g. a self-hosted local Bot API server or a test mock). */
   apiBase?: string;
 };
@@ -80,10 +76,6 @@ export type TelegramConfig = {
   botUsername?: string;
   telegramEnabled?: boolean;
   allowedUserId?: number;
-  /** One-time local pairing code required before allowedUserId is set. */
-  pairingCode?: string;
-  /** Epoch ms after which pairingCode is rejected; missing means expired. */
-  pairingCodeExpiresAt?: number;
   /** Last chat that interacted with the bot. */
   activeChatId?: number;
   lastUpdateId?: number;

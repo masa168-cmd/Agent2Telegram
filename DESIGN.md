@@ -86,7 +86,7 @@ mods 提供的相关能力（2.1.316 自带类型定义 `claude-code.d.ts` 与 `
 - 会话与网关的协议（即 4b 定型的「适配器接口」，见 4.4）：登记 `/open`（连接编号、目录、会话 ID、进程号、tmux 窗格）→ 反复挂起 20 秒取消息 `/poll` → 退出注销 `/close`。在线判断全在网关内存：取消息超时 60 秒或进程已不存在即移除；同一目录只接一个会话，同一会话重新登记会顶替旧连接；网关重启后会话自动重新登记。不用心跳文件、不用选主，自己的进程之间不会出现 409。
 - 两种接入方式（`BotGateway` 的 `mode`）：
   - **thin（Claude Code）**：网关解析消息与按钮，向会话发 `prompt / abort / command / usage / restart` 等事件；回复、审批、选择框经 `/turn-complete`、`/prompt`、`/wait` 等由网关代发。只有 `a2t enable claude` 开启过的目录才登记成功。`/restart` 由网关起辅助程序，读 `/proc/<pid>/cmdline` 保留原参数，向同一 tmux 窗格输入 `claude … --resume <会话 ID>`。
-  - **rich（Pi）**：网关只校验群与用户，把话题内的原始 update 原样交给 Pi（`{type:"update"}`），Pi 沿用原有处理并**自己直接发送**；按钮回调按话题或 Pi 上报的按钮消息 ID 路由。私聊只用于配对（`/pair`），由网关统一处理。
+  - **rich（Pi）**：网关只校验群与用户，把话题内的原始 update 原样交给 Pi（`{type:"update"}`），Pi 沿用原有处理并**自己直接发送**；按钮回调按话题或 Pi 上报的按钮消息 ID 路由。私聊不操作 Agent，只回一句提示。
 - Codex（阶段 5）：所有会话都在同一个常驻 app-server 里，预计由网关连接 app-server，按 thread 的 `cwd` 对应话题。
 - 选型理由（11-02 与用户确认）：文件锁选主要写复杂的交接逻辑，交接慢且交接期会有 409；网关常驻约 26–95 MB、空闲时 CPU 近零。4b 把 Pi 从「实例间选主 + 本机转发」改为接入同一网关，删除了 `instance-coordinator`、`forum-router`、`polling`、历史回放与 Pi 私聊模式。
 - 代码：`lib/gateway/`（通用网关）、`lib/claude/mod/`（Claude 插件 `agent2telegram`）、`lib/pi/gateway-client.ts` 与 `lib/pi/forum-session.ts`（Pi 客户端）。
@@ -105,7 +105,7 @@ mods 提供的相关能力（2.1.316 自带类型定义 `claude-code.d.ts` 与 `
 ```text
 telegram-core/          与 Agent 无关
   telegram-api, markdown, text-split, rich-message,
-  forum-transport, forum-binding, pairing, config（路径可配置）, logger,
+  forum-transport, forum-binding, config（路径可配置）, logger,
   heartbeat, callback-protocol, menu 键盘, attachments 收发
 gateway/                网关（4b：polling、话题、路由都在这里），接口见 4.4
 adapters/pi/            现有 session-capture、tui/、命令、renderer 的 Pi 部分
@@ -147,9 +147,7 @@ interface AgentAdapter {
 
 ## 5. 配对与授权
 
-现状（`lib/core/pairing.ts`）：本地生成 6 位配对码，私聊 Bot 发 `/pair <码>` 后记录 `allowedUserId`；配对前一律拒绝。阶段 0 已实现：配对码 10 分钟过期、错 5 次作废、只接受私聊；论坛模式未配对时接受私聊 `/pair`。`a2t setup` 也可直接填写 `allowedUserId` 跳过配对。
-
-结论：`/pair` 和 `allowedUserId` 是配合关系，保留。尚未做：数据结构预留多用户（列表），界面暂时只支持一个。
+4c（11-02）起不再配对：`a2t setup` 必填你的 Telegram 用户 ID（`allowedUserId`），网关和 Agent 只认这个账号。用户 ID 不是秘密，但别人无法以你的账号发消息，所以直接填写与配对同样安全；填错的后果是谁都无法操作，重新 `a2t setup` 即可。没有用户 ID 时网关不收该 Bot 的消息。配对码、`/pair`、`lib/core/pairing.ts` 已删除（阶段 0 的配对加固随之不再适用）。尚未做：多用户。
 
 ## 6. 现有插件中需要处理的设计问题
 
@@ -164,6 +162,7 @@ interface AgentAdapter {
 7. 界面中英文混用。
 8. 遗留：`scripts/e2e/run-e2e-commands.mjs` 已改为检查 Telegram 拒绝 `/quit`、`/exit`（该脚本需真实 Pi，未运行）。`forum-multiprocess.test.ts` 随 4b 删除多实例选主一并删除。
 9. 4b 收尾（11-02）：会话接入时网关先「重开」记录的话题——已关闭的重开，已删除的新建一次，其他错误（如网络）沿用原话题、不阻止接入；Pi 与 Claude 共用。一个 Agent 只能有一个 Bot：`addBot` 已有 Bot 时拒绝，Pi 的 `/tg → Bots` 只在没有 Bot 时显示「添加」，删除「默认 Bot」选择与清除、目录绑定到其他 Bot 的流程；目录绑定里旧的 `botId` 被忽略，Pi 与网关用同一规则选 Bot（默认，否则第一个）。
+10. 4c（11-02）：Bot、用户 ID 只由 `a2t setup` 管，目录接入只由 `a2t enable/disable` 管。Pi 的 `/tg` 删除 Bots、Project 两项及相关流程，只保留 Commands、Config、Online sessions、Debug info；目录绑定里旧的 `enabled:false` 被忽略。`a2t disable` 后网关在取消息或每 10 秒检查时断开该目录的会话并在话题提示，`a2t enable` 后会话约 30 秒内自动重新登记（Pi 按目录及上级目录是否有入口判断，Claude 按已开启列表）。
 
 ## 7. 分阶段计划（每阶段单独确认）
 

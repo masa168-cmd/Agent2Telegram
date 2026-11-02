@@ -38,7 +38,7 @@ export function formatTelegramStatusLine(
     return `${label} ${theme.fg("muted", "disconnected")}`;
   }
   if (!state.paired) {
-    return `${label} ${theme.fg("warning", "awaiting pairing")}`;
+    return `${label} ${theme.fg("warning", "user ID not set (a2t setup)")}`;
   }
   const bot = state.botUsername ? ` @${state.botUsername}` : "";
   if (state.processing) {

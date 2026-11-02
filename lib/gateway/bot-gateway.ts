@@ -3,7 +3,6 @@ import { join, resolve } from "node:path";
 import { forumBotId, forumTopicKey, forumTopicName } from "../core/forum-binding.ts";
 import { escapeHtml } from "../core/html.ts";
 import { markdownToTelegramHtml } from "../core/markdown.ts";
-import { authorizeTelegramUser, formatPairingInstructions } from "../core/pairing.ts";
 import type { TelegramConfig, TelegramTransport, TelegramUpdate } from "../core/types.ts";
 import { runtimeDir } from "./paths.ts";
 import type { RestartJob } from "./restart-helper.ts";
@@ -63,8 +62,6 @@ export type GatewayDeps = {
   getConfig: () => TelegramConfig;
   api: <T>(method: string, body: Record<string, unknown>) => Promise<T>;
   transport: Pick<TelegramTransport, "sendText" | "sendChatAction" | "sendButtons" | "editText" | "answerCallbackQuery">;
-  /** Persist pairing results (allowedUserId, cleared code) to the bot record. */
-  savePairing: (config: TelegramConfig) => Promise<void>;
   /** Start the detached helper that types the resume command into the pane. */
   startRestart?: (job: Omit<RestartJob, "logPath">) => void;
   /** The old process's argv, so its flags survive a restart. */
@@ -110,7 +107,9 @@ const TYPING_INTERVAL_MS = 4_500;
 export const SESSION_STALE_MS = 60_000;
 const UNSUPPORTED_COMMAND_TEXT = "暂不支持这个命令。可用：/stop /compact /clear /usage /restart";
 const RESTART_NEEDS_TMUX_TEXT = "只有在 tmux 里运行 ctg 时才能用 /restart。Claude Code 没有退出。";
-const PRIVATE_AFTER_PAIRING_TEXT = "已配对。请在论坛群里对应目录的话题中和我对话。";
+const PRIVATE_CHAT_TEXT = "请在论坛群里对应目录的话题中和我对话。";
+const NOT_ENABLED_TEXT = "此目录未开启 Telegram（在该目录运行 a2t enable pi 或 a2t enable claude）。";
+const NO_USER_TEXT = "还没有设置你的 Telegram 用户 ID：在终端运行 a2t setup（pi 或 claude），然后 a2t gateway restart。";
 
 /** Same key as the Pi adapter: `telegram:<bot id>`, else a token hash. */
 export const botKey = forumBotId;
@@ -132,7 +131,6 @@ export class BotGateway {
   private readonly pending = new Map<string, Pending>();
   /** Claude sessions that asked for /restart: say "restarted" when they open again. */
   private readonly restarting = new Set<string>();
-  private pairingFailures = 0;
 
   constructor(private readonly deps: GatewayDeps) {}
 
@@ -224,7 +222,7 @@ export class BotGateway {
   async open(request: OpenRequest): Promise<OpenResult> {
     const cwd = resolve(request.cwd);
     if (this.deps.isEnabled && !this.deps.isEnabled(cwd)) {
-      return { ok: false, quiet: true, reason: `此目录未开启 Telegram（在该目录运行 a2t enable claude）。` };
+      return { ok: false, quiet: true, reason: NOT_ENABLED_TEXT };
     }
     for (const other of [...this.sessions.values()]) {
       if (other.connId === request.connId || other.cwd !== cwd) continue;
@@ -241,7 +239,7 @@ export class BotGateway {
 
     const notices: string[] = [];
     const config = this.deps.getConfig();
-    if (config.allowedUserId === undefined) notices.push(formatPairingInstructions(config, this.now()));
+    if (config.allowedUserId === undefined) notices.push(NO_USER_TEXT);
     try {
       await this.ensureTopic(session);
     } catch (error) {
@@ -260,6 +258,7 @@ export class BotGateway {
   poll(connId: string, timeoutMs: number, messageIds: readonly number[] = []): Promise<{ events: GatewayEvent[] } | { unknown: true }> {
     const session = this.sessions.get(connId);
     if (!session) return Promise.resolve({ unknown: true });
+    if (this.disabledNow(session)) return Promise.resolve({ unknown: true });
     session.lastSeenAt = this.now();
     for (const id of messageIds) if (Number.isSafeInteger(id) && id > 0) session.messageIds.add(id);
     while (session.messageIds.size > 256) session.messageIds.delete(session.messageIds.values().next().value!);
@@ -282,9 +281,25 @@ export class BotGateway {
     if (session) this.drop(session);
   }
 
-  /** Drop sessions whose Claude Code is gone, or that stopped polling (killed without a goodbye). */
+  /**
+   * `a2t disable` took the directory off: drop its session now and say so in the
+   * topic. The client then registers again and is refused until `a2t enable`.
+   */
+  private disabledNow(session: Session): boolean {
+    if (!this.deps.isEnabled || this.deps.isEnabled(session.cwd)) return false;
+    this.drop(session);
+    const chatId = this.deps.getConfig().forumChatId;
+    if (session.threadId !== undefined && chatId !== undefined) {
+      void this.deps.transport.sendText(chatId, escapeHtml(`此目录已关闭 Telegram（a2t disable），${this.label} 会话不再接收消息。`),
+        session.threadId).catch(() => undefined);
+    }
+    return true;
+  }
+
+  /** Drop sessions whose agent is gone, that stopped polling (killed without a goodbye), or whose directory was disabled. */
   reap(): void {
     for (const session of [...this.sessions.values()]) {
+      if (this.disabledNow(session)) continue;
       const gone = session.pid !== undefined && !this.alive(session.pid);
       if (gone || (!session.waiter && this.now() - session.lastSeenAt > SESSION_STALE_MS)) this.drop(session);
     }
@@ -340,19 +355,8 @@ export class BotGateway {
     const chatId = message.chat.id;
 
     if (message.chat.type === "private") {
-      if (config.allowedUserId !== undefined) {
-        if (userId === config.allowedUserId) await this.deps.transport.sendText(chatId, PRIVATE_AFTER_PAIRING_TEXT);
-        return;
-      }
-      const decision = authorizeTelegramUser(config, userId, message.text, config.botUsername, {
-        chatType: "private", now: this.now(), failures: this.pairingFailures,
-      });
-      this.pairingFailures = decision.failures;
-      if (decision.paired || decision.invalidated) await this.deps.savePairing(decision.config);
-      if (decision.paired) {
-        await this.deps.transport.sendText(chatId, PRIVATE_AFTER_PAIRING_TEXT);
-        for (const session of this.sessions.values()) await this.ensureTopic(session).catch(() => undefined);
-      }
+      // Only the configured user gets a pointer to the group; others are ignored.
+      if (userId !== undefined && userId === config.allowedUserId) await this.deps.transport.sendText(chatId, PRIVATE_CHAT_TEXT);
       return;
     }
 
@@ -386,7 +390,7 @@ export class BotGateway {
   /**
    * Rich mode: hand an authorized update from a session's topic to that session
    * untouched. Returns false for what the shared path still handles (private
-   * chats, so pairing works the same for every agent).
+   * chats: one shared reply for every agent).
    */
   private async handleRichUpdate(update: TelegramUpdate): Promise<boolean> {
     const query = update.callback_query;

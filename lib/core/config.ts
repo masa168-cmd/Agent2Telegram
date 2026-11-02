@@ -265,38 +265,27 @@ export function materializeTelegramConfig(
   bot: BotRecord | undefined,
   binding: ProjectTelegramBinding | undefined,
 ): TelegramConfig {
-  if (!bot) {
-    // No bot resolves — check if binding says enabled (for status display).
-    if (binding?.enabled === false) return { telegramEnabled: false };
-    return {};
-  }
+  if (!bot) return {};
 
   const config: TelegramConfig = {
     botToken: bot.token,
     ...(bot.forumChatId === undefined ? {} : { forumChatId: bot.forumChatId }),
     ...(bot.botUsername === undefined ? {} : { botUsername: bot.botUsername }),
     ...(bot.allowedUserId === undefined ? {} : { allowedUserId: bot.allowedUserId }),
-    ...(bot.pairingCode === undefined ? {} : { pairingCode: bot.pairingCode }),
-    ...(bot.pairingCodeExpiresAt === undefined ? {} : { pairingCodeExpiresAt: bot.pairingCodeExpiresAt }),
     ...(bot.apiBase === undefined ? {} : { apiBase: bot.apiBase }),
   };
 
+  // Whether a folder uses Telegram is `a2t enable/disable pi` (the extension entry
+  // and the gateway's check); an old `enabled: false` from /tg Project is ignored.
+  config.telegramEnabled = true;
   // Project binding overrides prefs + runtime state.
   if (binding) {
-    if (binding.enabled === undefined) {
-      config.telegramEnabled = true; // file exists → default enabled
-    } else {
-      config.telegramEnabled = binding.enabled;
-    }
     if (binding.tool !== undefined) config.tool = binding.tool;
     if (binding.thinking !== undefined) config.thinking = binding.thinking;
     if (binding.retryCount !== undefined) config.retryCount = binding.retryCount;
     if (binding.bashConfirm !== undefined) config.bashConfirm = binding.bashConfirm;
     if (binding.lastUpdateId !== undefined) config.lastUpdateId = binding.lastUpdateId;
     if (binding.activeChatId !== undefined) config.activeChatId = binding.activeChatId;
-  } else {
-    // No project binding → enabled by default if a bot resolves.
-    config.telegramEnabled = true;
   }
 
   return config;
@@ -539,8 +528,6 @@ function createBotRecordFromConfig(config: TelegramConfig, name: string): BotRec
     token: config.botToken!,
     ...(config.botUsername === undefined ? {} : { botUsername: config.botUsername }),
     ...(config.allowedUserId === undefined ? {} : { allowedUserId: config.allowedUserId }),
-    ...(config.pairingCode === undefined ? {} : { pairingCode: config.pairingCode }),
-    ...(config.pairingCodeExpiresAt === undefined ? {} : { pairingCodeExpiresAt: config.pairingCodeExpiresAt }),
     ...(config.apiBase === undefined ? {} : { apiBase: config.apiBase }),
   };
 }

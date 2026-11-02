@@ -7,10 +7,9 @@
 import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "../core/data-dir.ts";
-import { ensureTelegramPairingCode } from "../core/pairing.ts";
 import { createTelegramTransport, getTelegramUpdates, telegramApi } from "../core/telegram-api.ts";
 import { telegramTokenHash } from "../core/forum-binding.ts";
 import type { BotRecord, TelegramConfig } from "../core/types.ts";
@@ -18,7 +17,8 @@ import { BotGateway } from "./bot-gateway.ts";
 import { isClaudeProjectEnabled } from "./claude-projects.ts";
 import { claimBot, type AgentName } from "./ownership.ts";
 import { claudeTelegramDir, runtimeDir } from "./paths.ts";
-import { defaultBot, readRegistryFile, updateBotFile } from "./registry.ts";
+import { defaultBot, readRegistryFile } from "./registry.ts";
+import { isPiEnabled } from "../cli/pi-entry.ts";
 
 const POLL_HOLD_MS = 20_000;
 // A brief conflict is normal while an old poller hands over; a lasting one is another program.
@@ -35,8 +35,6 @@ function toConfig(bot: BotRecord): TelegramConfig {
     ...(bot.forumChatId === undefined ? {} : { forumChatId: bot.forumChatId }),
     ...(bot.botUsername === undefined ? {} : { botUsername: bot.botUsername }),
     ...(bot.allowedUserId === undefined ? {} : { allowedUserId: bot.allowedUserId }),
-    ...(bot.pairingCode === undefined ? {} : { pairingCode: bot.pairingCode }),
-    ...(bot.pairingCodeExpiresAt === undefined ? {} : { pairingCodeExpiresAt: bot.pairingCodeExpiresAt }),
     ...(bot.apiBase === undefined ? {} : { apiBase: bot.apiBase }),
   };
 }
@@ -65,6 +63,14 @@ type AgentSpec = {
   thin: boolean;
 };
 
+/** `a2t enable pi` wrote an entry in `cwd` or one of its parents. */
+function isPiEnabledHere(cwd: string): boolean {
+  for (let dir = resolve(cwd); ; dir = dirname(dir)) {
+    if (isPiEnabled(dir)) return true;
+    if (dirname(dir) === dir) return false;
+  }
+}
+
 function agentSpecs(): AgentSpec[] {
   const piDir = getAgentDir();
   const claudeDir = claudeTelegramDir();
@@ -72,7 +78,8 @@ function agentSpecs(): AgentSpec[] {
     { agent: "pi", label: "Pi", mode: "rich", dataDir: piDir, thin: false,
       // Pi's existing store and cursor, so topics and the offset carry over.
       topicsPath: token => join(piDir, "tg-runtime", telegramTokenHash(token), "topics.json"),
-      cursorPath: token => join(piDir, "tg-runtime", telegramTokenHash(token), "cursor.json") },
+      cursorPath: token => join(piDir, "tg-runtime", telegramTokenHash(token), "cursor.json"),
+      isEnabled: cwd => isPiEnabledHere(cwd) },
     { agent: "claude", label: "Claude Code", mode: "thin", dataDir: claudeDir, thin: true,
       topicsPath: () => join(runtimeDir(claudeDir), "topics.json"),
       cursorPath: token => join(runtimeDir(claudeDir), `${telegramTokenHash(token)}.cursor.json`),
@@ -95,6 +102,7 @@ async function serveAgent(spec: AgentSpec, stopping: () => boolean, onStop: Arra
     bot = defaultBot(await readRegistryFile(registryPath));
     if (!bot) disabled = `${spec.label} 的 Telegram 未配置：${setupHint}。`;
     else if (bot.forumChatId === undefined) disabled = `${spec.label} 的 Bot 未设置论坛群 ID（forumChatId）：${setupHint}。`;
+    else if (bot.allowedUserId === undefined) disabled = `${spec.label} 的 Bot 未设置你的 Telegram 用户 ID：${setupHint}。`;
     else {
       const claim = claimBot(bot.token, spec.agent);
       if (!claim.ok) disabled = claim.reason;
@@ -111,23 +119,12 @@ async function serveAgent(spec: AgentSpec, stopping: () => boolean, onStop: Arra
       if (Number.isSafeInteger(cursor.updateId)) config.lastUpdateId = cursor.updateId;
     } catch { /* first run */ }
   }
-  const savePairing = async (next: TelegramConfig) => {
-    config = { ...config, ...next };
-    if (next.pairingCode === undefined) { delete config.pairingCode; delete config.pairingCodeExpiresAt; }
-    await updateBotFile(registryPath, bot!.id, {
-      allowedUserId: config.allowedUserId, pairingCode: config.pairingCode, pairingCodeExpiresAt: config.pairingCodeExpiresAt,
-    });
-  };
-  if (bot && !disabled && config.allowedUserId === undefined) {
-    const withCode = ensureTelegramPairingCode(config);
-    if (withCode.pairingCode !== config.pairingCode) await savePairing(withCode).catch(error => log(`${tag} pairing code: ${String(error)}`));
-  }
 
   const abort = new AbortController();
   onStop.push(() => abort.abort());
   const helper = join(dirname(fileURLToPath(import.meta.url)), "restart-helper.js");
   const gateway = new BotGateway({
-    dataDir: spec.dataDir, mode: spec.mode, agentLabel: spec.label, savePairing,
+    dataDir: spec.dataDir, mode: spec.mode, agentLabel: spec.label,
     ...(bot ? { topicsPath: spec.topicsPath(bot.token) } : {}),
     ...(spec.isEnabled ? { isEnabled: spec.isEnabled } : {}),
     getConfig: () => config,

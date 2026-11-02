@@ -50,7 +50,6 @@ function setup(initial: TelegramConfig = { botToken: TOKEN, forumChatId: CHAT, a
     getConfig: () => config,
     api: api as never,
     transport: { sendText: sendText as never, sendChatAction, sendButtons: sendButtons as never, editText, answerCallbackQuery },
-    savePairing: async next => { config = next; },
     startRestart,
     readArgv: () => ["/usr/bin/claude", "--permission-mode", "auto"],
     isPidAlive: options.alive ?? (() => true),
@@ -124,28 +123,22 @@ describe("BotGateway sessions and topics", () => {
     expect(t.api.mock.calls.filter(c => c[0] === "createForumTopic")).toHaveLength(1);
   });
 
-  it("asks for pairing and makes no topic before a user is paired", async () => {
-    const t = setup({ botToken: TOKEN, forumChatId: CHAT, pairingCode: "123456", pairingCodeExpiresAt: Date.now() + 60_000 });
+  it("says how to set the user ID and makes no topic while none is set", async () => {
+    const t = setup({ botToken: TOKEN, forumChatId: CHAT });
     const result = await t.gateway.open({ connId: "a", cwd: "/work/alpha" });
     expect(result).toMatchObject({ ok: true });
-    expect(result.ok && result.notices.join()).toContain("/pair 123456");
+    expect(result.ok && result.notices.join()).toContain("a2t setup");
     expect(t.api).not.toHaveBeenCalled();
   });
 
-  it("pairs in a private chat with the code, then gives the open sessions their topics", async () => {
-    const t = setup({ botToken: TOKEN, forumChatId: CHAT, pairingCode: "123456", pairingCodeExpiresAt: Date.now() + 60_000 });
-    await t.gateway.open({ connId: "a", cwd: "/work/alpha" });
-    await t.gateway.handleUpdate({ update_id: 2, message: { message_id: 1, chat: { id: USER, type: "private" },
-      from: { id: USER }, text: "/pair 123456" } } as TelegramUpdate);
+  it("answers the allowed user in a private chat with a pointer to the group, and ignores others", async () => {
+    const t = setup();
+    const privateMessage = (from: number, text: string) => ({ update_id: 2, message: { message_id: 1,
+      chat: { id: from, type: "private" }, from: { id: from }, text } } as TelegramUpdate);
+    await t.gateway.handleUpdate(privateMessage(USER, "hi"));
+    await t.gateway.handleUpdate(privateMessage(999, "/pair 123456"));
+    expect(t.sent).toEqual([{ chatId: USER, text: "请在论坛群里对应目录的话题中和我对话。", threadId: undefined }]);
     expect(t.getConfig().allowedUserId).toBe(USER);
-    await t.gateway.handleUpdate(topicMessage("hello"));
-    expect(await events(t.gateway, "a")).toEqual([{ type: "prompt", text: "hello" }]);
-  });
-
-  it("refuses /pair in a group", async () => {
-    const t = setup({ botToken: TOKEN, forumChatId: CHAT, pairingCode: "123456", pairingCodeExpiresAt: Date.now() + 60_000 });
-    await t.gateway.handleUpdate(topicMessage("/pair 123456"));
-    expect(t.getConfig().allowedUserId).toBeUndefined();
   });
 
   it("keeps a directory that is not enabled idle, without a topic", async () => {
@@ -153,6 +146,22 @@ describe("BotGateway sessions and topics", () => {
     expect(await t.gateway.open({ connId: "x", cwd: "/work/beta" })).toMatchObject({ ok: false, quiet: true });
     expect(await t.gateway.open({ connId: "y", cwd: "/work/alpha" })).toMatchObject({ ok: true, threadId: 77 });
     expect(t.api).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops a session as soon as its directory is disabled, says so in the topic, and takes it back once enabled", async () => {
+    let enabled = true;
+    const t = setup(undefined, { isEnabled: () => enabled });
+    await t.gateway.open({ connId: "a", cwd: "/work/alpha" });
+    await t.gateway.poll("a", 0); // drain the "topic created" log
+    const held = t.gateway.poll("a", 60_000);
+    enabled = false; // a2t disable
+    t.gateway.reap();
+    expect(await held).toEqual({ events: [] }); // the held poll returns at once
+    expect(await t.gateway.poll("a", 0)).toEqual({ unknown: true });
+    expect(t.sent.at(-1)).toMatchObject({ threadId: 77, text: expect.stringContaining("a2t disable") });
+    expect(await t.gateway.open({ connId: "a", cwd: "/work/alpha" })).toMatchObject({ ok: false, quiet: true });
+    enabled = true; // a2t enable
+    expect(await t.gateway.open({ connId: "a", cwd: "/work/alpha" })).toMatchObject({ ok: true, threadId: 77 });
   });
 
   it("allows one live session per directory", async () => {
@@ -414,13 +423,6 @@ describe("BotGateway rich mode (Pi)", () => {
     expect(t.sent.at(-1)?.text).toContain("Pi 会话");
     await t.gateway.handleUpdate(tap("x:1"));
     expect(t.answerCallbackQuery).toHaveBeenLastCalledWith("cb1", "已过期");
-  });
-
-  it("still pairs in a private chat", async () => {
-    const t = setup({ botToken: TOKEN, forumChatId: CHAT, pairingCode: "123456", pairingCodeExpiresAt: Date.now() + 60_000 }, { rich: true });
-    await t.gateway.handleUpdate({ update_id: 2, message: { message_id: 1, chat: { id: USER, type: "private" },
-      from: { id: USER }, text: "/pair 123456" } } as TelegramUpdate);
-    expect(t.getConfig().allowedUserId).toBe(USER);
   });
 
   it("adopts the topic a session already knew instead of creating one", async () => {

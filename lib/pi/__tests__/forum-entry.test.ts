@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { readBudget } from "../context-budget/config.ts";
-import { readBotRegistry, updateBot, writeBotRegistry, writeProjectBinding } from "../../core/config.ts";
+import { writeBotRegistry, writeProjectBinding } from "../../core/config.ts";
 import type { GatewayClientDeps, GatewayOpen } from "../gateway-client.ts";
 import extension from "../../../index.ts";
 
@@ -128,16 +128,14 @@ const incoming = (update_id: number, text?: string, thread = 11, user = 7) => ({
   message: { message_id: 1000 + update_id, from: { id: user }, chat: { id: -100123, type: "supergroup" },
     message_thread_id: thread, ...(text === undefined ? { document: { file_id: "fake-input", file_name: "../../input.txt" } } : { text }) } });
 
-describe("pairing happens in the gateway (offline)", () => {
-  it("registers with the gateway before pairing and accepts the topic once the gateway has paired the user", async () => {
+describe("without a user ID set by a2t setup (offline)", () => {
+  it("still registers with the gateway but runs nothing from Telegram", async () => {
     const f = await setup({ unpaired: true });
     expect(f.gateway().open).toMatchObject({ cwd: f.cwd, pid: process.pid });
-    // The gateway paired the user and wrote it to tg.json; Pi reads it on the next update.
-    await updateBot("test", { allowedUserId: 7 });
     await f.connect();
-    await f.dispatch(incoming(1, "after pairing"));
-    await vi.waitFor(() => expect(f.prompts).toEqual(["after pairing"]));
-    expect((await readBotRegistry()).bots.find(b => b.id === "test")?.allowedUserId).toBe(7);
+    await f.dispatch(incoming(1, "hello"));
+    await new Promise(done => setTimeout(done, 50));
+    expect(f.prompts).toEqual([]);
   });
 });
 

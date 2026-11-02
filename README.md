@@ -39,7 +39,9 @@ curl -fsSL https://raw.githubusercontent.com/masa168-cmd/Agent2Telegram/main/ins
    a2t setup claude
    ```
 
-   需要填：Bot Token、论坛群 ID（以 `-100` 开头：复制群里任意消息的链接 `t.me/c/<数字>/…`，在 `<数字>` 前加 `-100`）、你的 Telegram 用户 ID（可留空，留空则按提示私聊 Bot 发 `/pair <配对码>` 完成配对）。
+   需要填：Bot Token、论坛群 ID（以 `-100` 开头：复制群里任意消息的链接 `t.me/c/<数字>/…`，在 `<数字>` 前加 `-100`）、你的 Telegram 用户 ID（必填，私聊 [@userinfobot](https://t.me/userinfobot) 可查到；只有这个账号能操作 Agent）。
+
+   每个 Agent 只能有一个 Bot；重新运行 `a2t setup` 就是更换。Bot 只在这里配置，Agent 里不再管理 Bot。
 
 3. 配置后重启网关：`a2t gateway restart`。
 
@@ -49,11 +51,11 @@ curl -fsSL https://raw.githubusercontent.com/masa168-cmd/Agent2Telegram/main/ins
 
 ```bash
 cd ~/my-project
-a2t enable pi       # 之后在该目录启动 pi
+a2t enable pi       # 之后在该目录启动的 pi 会接入
 a2t enable claude   # 该目录的 Claude Code 会话约 30 秒内自动接入
 ```
 
-`a2t disable pi|claude [目录]` 关闭。群里会为每个目录自动建一个话题，话题名是目录名；同一目录同时只接一个会话。
+`a2t disable pi|claude [目录]` 关闭：正在运行的会话约 10 秒内断开，话题里会提示；再 `a2t enable` 后约 30 秒内自动接回，不用重启。群里会为每个目录自动建一个话题，话题名是目录名；同一目录同时只接一个会话。
 
 ## 在 Telegram 里使用
 

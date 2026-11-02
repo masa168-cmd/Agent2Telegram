@@ -104,7 +104,7 @@ export async function main(argv: string[]): Promise<number> {
       const dir = resolve(rest[1] ?? process.cwd());
       if (agent === "pi") {
         const done = enablePi(dir, appDir());
-        console.log(done.result === "unchanged" ? `Pi 已在 ${dir} 开启。` : `已在 ${dir} 开启 Pi（${done.path}）。在该目录（重新）启动 pi 生效。`);
+        console.log(done.result === "unchanged" ? `Pi 已在 ${dir} 开启。` : `已在 ${dir} 开启 Pi（${done.path}）。新启动的 pi 会加载它；关闭前就在运行的 pi 约 30 秒内自动接回。`);
         for (const legacy of done.removedLegacy) console.log(`已移除旧入口 ${legacy}`);
       } else {
         console.log(enableClaudeProject(agentDataDir("claude"), dir)
@@ -116,7 +116,7 @@ export async function main(argv: string[]): Promise<number> {
       const agent = agentArg(rest[0]);
       const dir = resolve(rest[1] ?? process.cwd());
       const changed = agent === "pi" ? disablePi(dir) : disableClaudeProject(agentDataDir("claude"), dir);
-      console.log(changed ? `已在 ${dir} 关闭 ${agent}。` : `${agent} 本来就没有在 ${dir} 开启。`);
+      console.log(changed ? `已在 ${dir} 关闭 ${agent}；正在运行的会话约 10 秒内断开。` : `${agent} 本来就没有在 ${dir} 开启。`);
       return 0;
     }
     case "gateway": {

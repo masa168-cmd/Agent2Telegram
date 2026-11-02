@@ -38,7 +38,7 @@ export type GatewayClientDeps = {
 const POLL_TIMEOUT_MS = 30_000;
 const RETRY_DOWN_MS = 3_000;
 const RETRY_REFUSED_MS = 30_000;
-/** Registered but no topic yet (the Bot is not paired): check again soon. */
+/** Registered but no topic yet (no user ID, or the topic could not be made): check again soon. */
 const RETRY_UNPAIRED_MS = 5_000;
 
 export function postUnix(socketPath: string, path: string, body: Record<string, unknown>, timeoutMs: number): Promise<Reply | undefined> {
@@ -103,7 +103,7 @@ export class GatewayClient {
     if (reply === undefined) { this.refuse("Telegram 网关未运行（a2t status）。"); return false; }
     if (!reply.ok) { this.refuse(reply.reason ?? "Telegram 话题尚未就绪。"); return false; }
     if (!reply.threadId) {
-      // The gateway took us but has no topic yet: the Bot is not paired. Say how, once.
+      // The gateway took us but has no topic yet. Say why, once.
       const reason = reply.notices?.join("\n") || "Telegram 话题尚未就绪。";
       if (reason !== this.lastReason) this.deps.onNotice?.(reason);
       this.refuse(reason);

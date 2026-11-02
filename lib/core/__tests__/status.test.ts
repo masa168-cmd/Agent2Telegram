@@ -78,13 +78,13 @@ describe("formatTelegramStatusLine", () => {
     expect(result).toContain("[success]");
   });
 
-  it("shows 'awaiting pairing' when not paired", () => {
+  it("says the user ID is not set when no user is allowed", () => {
     const result = formatTelegramStatusLine(theme, {
       hasBotToken: true,
       pollingActive: true,
       paired: false,
     });
-    expect(result).toContain("awaiting pairing");
+    expect(result).toContain("user ID not set (a2t setup)");
   });
 
   it("shows 'active' when a non-current instance is processing", () => {

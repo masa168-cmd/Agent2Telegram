@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- `a2t` manages Bots and folders; agents no longer do. `a2t setup pi|claude` requires your Telegram user ID, and pairing (pairing codes, `/pair`) is removed: without a user ID the gateway does not poll that Bot. Pi's `/tg` drops the Bots and Project items (and their add/update/remove/pairing/connect flows); it keeps Commands, Config, Online sessions and Debug info. An old per-folder `enabled: false` is ignored. `a2t disable` now drops a running session within about 10 seconds and says so in its topic; after `a2t enable` it comes back within about 30 seconds without a restart.
+
 - Pi now joins the same long-lived gateway as Claude Code: one systemd user service `agent2telegram-gateway` (replaces `agent2telegram-claude`) polls every agent's Bot and hands each directory's topic to its online session over a Unix socket (`~/.agent2telegram/<agent>/gateway.sock`). Pi receives the raw updates and still answers Telegram itself. Removed from Pi: leader election between instances, local forwarding, history replay, instance switching, private-chat mode, the Telegram `!`/`!!` Shell entry, and the `/tg` Config items Thinking and Shell confirm; `/tg` Project no longer picks a Bot (each agent uses its default Bot). When a session connects, the gateway reopens its recorded topic (closed → reopened, deleted → recreated once; other errors keep the topic) for Pi and Claude Code alike.
 
 - One agent, one Bot: adding a second Bot to an agent is refused (`/tg → Bots` offers ➕ Add bot only while there is none; replace with `a2t setup pi`). The ⭐ Default bot submenu and per-folder Bot binding flows are removed; an old per-folder `botId` is ignored, so Pi and the gateway always use the same Bot.

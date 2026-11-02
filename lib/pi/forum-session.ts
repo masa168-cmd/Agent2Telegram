@@ -18,7 +18,7 @@ type SessionDeps = {
   onUpdate(delivery: ForumDelivery): Promise<void>;
   onChange(): void;
   onError(error: unknown): void;
-  /** A gateway notice for the terminal (pairing instructions, a conflict). */
+  /** A gateway notice for the terminal (setup hints, a conflict). */
   onNotice?(text: string): void;
   /** `<Pi data dir>/gateway.sock`. */
   socketPath(): string;
@@ -47,7 +47,7 @@ export class ForumSession {
 
   private configIdentity(ctx: ExtensionContext): string {
     const c = this.deps.getConfig();
-    // Not the paired user: the gateway checks who may write, and pairing must not drop the topic.
+    // Not the allowed user: the gateway checks who may write.
     return JSON.stringify([ctx.sessionManager.getSessionId(), ctx.cwd, c.botToken, c.forumChatId,
       c.apiBase, c.telegramEnabled !== false]);
   }

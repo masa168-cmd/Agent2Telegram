@@ -67,7 +67,7 @@ describe("forum topic implicit reply", () => {
 });
 
 describe("forum phone command policy", () => {
-  it.each(["/login", "/logout", "/auth", "/tg_forum retry", "/tg_setup"])("keeps %s in SSH instead of forwarding credentials", async command => {
+  it.each(["/login", "/logout", "/auth", "/tg_setup"])("keeps %s in SSH instead of forwarding credentials", async command => {
     const run = vi.spyOn(CommandGateway.prototype, "run").mockResolvedValue(true);
     const f = fixture(); await f.send(command);
     expect(run).not.toHaveBeenCalled(); expect(f.session.prompt).not.toHaveBeenCalled();
@@ -167,7 +167,6 @@ describe("forum phone command policy", () => {
     expect(isCredentialDialog({ kind: "settings", title: "Settings", items: [], submenu: { itemKey: "a",
       model: { kind: "input", title: "Value", secret: true, prefill: "fake" } } }, {})).toBe(true);
     expect(isCredentialDialog({ kind: "confirm", title: "Run this tool?" }, {})).toBe(false);
-    expect(forumCommandPolicy("tg_forum")).toBe("ssh");
     expect(forumCommandPolicy("tg_setup")).toBe("ssh");
   });
 });

@@ -63,7 +63,7 @@ export const TELEGRAM_BLOCKED_COMMANDS = new Set(["quit", "exit"]);
 
 /** Commands kept out of the BotMenu: SSH-only ones (still answered with the SSH notice) and
  *  terminal-bound ones such as scoped-models, which only affects the Ctrl+P cycle. */
-const TELEGRAM_MENU_HIDDEN = new Set(["tg_forum", "login", "logout", "tg_setup", "scoped_models"]);
+const TELEGRAM_MENU_HIDDEN = new Set(["login", "logout", "tg_setup", "scoped_models"]);
 
 /**
  * Chinese BotMenu wording for the plugin's own and Pi 1.4.0's built-in commands.

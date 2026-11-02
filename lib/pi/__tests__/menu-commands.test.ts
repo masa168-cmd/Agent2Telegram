@@ -160,7 +160,7 @@ describe("dynamic TUI catalog in BotMenu", () => {
 
   it("shows Chinese wording for plugin and Pi built-in commands, keeping other extensions' text", () => {
     const commands = buildTelegramMenuCommands(
-      { getCommands: () => [hostCommand("my-ext", "Third-party wording"), hostCommand("tg-forum", "仅 SSH"),
+      { getCommands: () => [hostCommand("my-ext", "Third-party wording"),
         hostCommand("tg-setup", "安装入口")] },
       {
         tuiCommands: [
@@ -182,7 +182,7 @@ describe("dynamic TUI catalog in BotMenu", () => {
     // Quitting is terminal-only; Telegram never lists it even when the host does.
     expect(commands.some((c) => c.command === "quit" || c.command === "exit")).toBe(false);
     // SSH-only commands are registered but never offered in the BotMenu.
-    for (const hidden of ["tg_forum", "tg_setup", "login", "logout"]) {
+    for (const hidden of ["tg_setup", "login", "logout"]) {
       expect(commands.some((c) => c.command === hidden)).toBe(false);
     }
   });

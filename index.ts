@@ -18,7 +18,7 @@ import { formatTelegramStatusLine, clearTelegramStatus, TELEGRAM_STATUS_KEY } fr
 import { installTelegramStatusAlignment } from "./lib/pi/status-footer.ts";
 import { ForumSession } from "./lib/pi/forum-session.ts";
 import { createForumTelegramTransport } from "./lib/pi/forum-transport.ts";
-import { canonicalCwd, forumTopicLink, forumTopicName, sameForumTarget } from "./lib/core/forum-binding.ts";
+import { canonicalCwd, forumTopicName, sameForumTarget } from "./lib/core/forum-binding.ts";
 import { deliverPendingNotices } from "./lib/core/pending-notices.ts";
 import { initLogger, log, type LogLevel } from "./lib/core/logger.ts";
 import { getCurrentTelegramTurn } from "./lib/core/turn-context.ts";
@@ -291,16 +291,6 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
       await runCommandFromMenu(name, args);
     },
   }, sessionDeps);
-
-  pi.registerCommand("tg-forum", {
-    description: "仅 SSH：查看本目录话题的连接状态",
-    handler: async (_args, ctx) => {
-      const target = forum.getTarget();
-      ctx.ui.notify(target
-        ? `话题在线：${forumTopicLink(target.chatId, target.threadId) ?? target.threadId}`
-        : forum.lastError ?? "正在连接 agent2telegram 网关…", "info");
-    },
-  });
 
   registerTelegramAttachmentTool(pi, {
     getActiveTurn: getCurrentActiveTurn,

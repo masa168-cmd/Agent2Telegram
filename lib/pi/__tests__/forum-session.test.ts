@@ -55,6 +55,13 @@ describe("ForumSession over the agent2telegram gateway", () => {
     expect(t.onChange).toHaveBeenCalled();
   });
 
+  it("opens one connection when two syncs prepare at once", async () => {
+    const t = setup();
+    await Promise.all([t.forum.prepare(t.ctx()), t.forum.prepare(t.ctx())]);
+    expect(t.clients.filter(c => !c.stopped)).toHaveLength(1);
+    expect(t.clients).toHaveLength(1);
+  });
+
   it("stops being sendable and says why when the gateway drops it", async () => {
     const t = setup();
     await t.forum.prepare(t.ctx());

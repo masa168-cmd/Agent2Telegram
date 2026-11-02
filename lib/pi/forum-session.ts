@@ -60,6 +60,8 @@ export class ForumSession {
     const identity = this.configIdentity(ctx);
     if (this.identity === identity) return;
     await this.close();
+    // Another prepare connected while we waited: check again rather than open a second connection.
+    if (this.identity !== undefined) return this.prepare(ctx);
     const c = this.deps.getConfig();
     this.ctx = ctx;
     this.identity = identity;

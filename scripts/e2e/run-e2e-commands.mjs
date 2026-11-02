@@ -304,46 +304,19 @@ async function runHost(host, label, phase = "main") {
   };
 
   if (phase === "quit" || phase === "exit" || phase === "disconnect") {
-    if (phase === "quit") {
+    if (phase === "quit" || phase === "exit") {
+      // Quitting is terminal-only: Telegram answers /quit and /exit with a notice,
+      // forwards nothing to Pi or the model, and the host keeps running.
+      const name = `/${phase}`;
       try {
-        const prompt = await dispatch("/quit");
-        const yes = findButton(prompt, /^(Yes|Confirm|OK|✅.*)$/i);
-        const labels = buttonsOf(prompt).map((b) => b.text).join(" / ");
-        if (yes) await click(yes, prompt.body?.message_id ?? prompt.message_id).catch(() => undefined);
-        const outcome = await waitFor("quit outcome", (state) => {
-          if (!hostAlive()) return "exited";
-          const note = state.calls.findLast((c) => /Shutdown requested/i.test(String(c.body?.text ?? "")));
-          return note ? "requested" : false;
-        }, 20_000).catch(() => undefined);
-        record("command /quit shuts down", outcome === "exited" || outcome === "requested",
-          `${outcome ?? "no outcome"} · buttons: ${labels || "(none)"}`);
+        await dispatch(name);
+        const notice = await waitFor(`${name} refused`, (state) =>
+          state.calls.findLast((c) => /Telegram 中不提供 \/quit、\/exit/.test(String(c.body?.text ?? ""))), 20_000).catch(() => undefined);
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+        record(`command ${name} is refused in Telegram`, !!notice && hostAlive(),
+          `${notice ? "notice sent" : "no notice"} · host ${hostAlive() ? "still running" : "exited"}`);
       } catch (error) {
-        record("command /quit shuts down", !hostAlive(), String(error.message).slice(0, 200));
-      }
-    } else if (phase === "exit") {
-      const menu = await waitFor("BotMenu published", (state) =>
-        state.calls.findLast((entry) => entry.method === "setMyCommands" && Array.isArray(entry.body?.commands)), 30_000).catch(() => undefined);
-      const advertised = menu?.body?.commands?.some((entry) => entry.command === "exit");
-      if (!advertised) {
-        record("command /exit (not advertised by this host)", true, "skipped: host has no /exit");
-      } else {
-        try {
-          // /exit confirms before it shuts the host down, so the prompt has to be
-          // answered from Telegram before anything else can happen.
-          const prompt = await dispatch("/exit");
-          const yes = findButton(prompt, /^(Yes|Confirm|OK|✅.*)$/i);
-          const labels = buttonsOf(prompt).map((b) => b.text).join(" / ");
-          if (yes) await click(yes, prompt.body?.message_id ?? prompt.message_id).catch(() => undefined);
-          const outcome = await waitFor("exit outcome", (state) => {
-            if (!hostAlive()) return "exited";
-            const note = state.calls.findLast((c) => /Shutdown requested/i.test(String(c.body?.text ?? "")));
-            return note ? "requested" : false;
-          }, 20_000).catch(() => undefined);
-          record("command /exit shuts down", outcome === "exited" || outcome === "requested",
-            `${outcome ?? "no outcome"} · buttons: ${labels || "(none)"}`);
-        } catch (error) {
-          record("command /exit shuts down", !hostAlive(), String(error.message).slice(0, 200));
-        }
+        record(`command ${name} is refused in Telegram`, false, String(error.message).slice(0, 200));
       }
     } else {
       // The flat tg-cwd-disconnect command is gone (T4.10): disconnect goes

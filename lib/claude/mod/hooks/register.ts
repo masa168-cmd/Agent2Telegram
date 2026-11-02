@@ -34,6 +34,8 @@ let socketPath: string | undefined
 let connected = false
 /** Set once Claude Code is exiting: stop polling and never register again. */
 let closing = false
+/** Bumped on every session start (/resume starts one too): an older poll loop stops. */
+let generation = 0
 let runningTurn: string | undefined
 let promptChain: Promise<unknown> = Promise.resolve()
 let idCounter = 0
@@ -178,8 +180,8 @@ async function open($: EngineInterface, cwd: string): Promise<boolean> {
 }
 
 /** Connect, then long-poll the gateway for as long as the module lives. */
-async function serve($: EngineInterface, cwd: string) {
-  while (!closing) {
+async function serve($: EngineInterface, cwd: string, mine: number) {
+  while (!closing && mine === generation) {
     if (!connected && !(await open($, cwd))) {
       await later($, 30_000)
       continue
@@ -201,14 +203,19 @@ export const register: Register = (on) => {
     const dataDir = (await $.env.get('CLAUDE_TELEGRAM_DIR'))
       ?? `${(await $.env.get('AGENT2TELEGRAM_DIR')) ?? `${await $.env.get('HOME')}/.agent2telegram`}/claude`
     socketPath = `${dataDir}/gateway.sock`
-    void serve($, e.cwd)
+    // A new conversation in the same process (/resume): register again, so the
+    // gateway knows the current session id, with one poll loop at a time.
+    generation += 1
+    closing = false
+    connected = false
+    void serve($, e.cwd, generation)
     return started
   })
 
-  // /clear ends the conversation but not the session's connection; only a real
-  // exit says goodbye (a session killed without one is dropped after a minute).
+  // /clear and /resume end a conversation, not Claude Code: only a real exit
+  // says goodbye (a session killed without one is dropped by the gateway).
   on('session.end', async ($, e, next) => {
-    if (e.reason !== 'clear') {
+    if (e.reason !== 'clear' && e.reason !== 'resume') {
       closing = true
       if (connected) await call($, '/close')
     }

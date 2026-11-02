@@ -28,6 +28,7 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "build:claude": "tsc -p tsconfig.claude.json",
     "test": "vitest run",
     "check:offline": "node scripts/offline-check.mjs",
     "test:watch": "vitest",

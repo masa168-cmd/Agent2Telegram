@@ -1,0 +1,5 @@
+{
+  "name": "agent2telegram",
+  "version": "0.1.0",
+  "description": "Mirror this Claude Code session to a Telegram forum topic (prototype)."
+}

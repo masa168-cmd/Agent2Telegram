@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": ".",
+    "rewriteRelativeImportExtensions": true,
+    "sourceMap": false,
+    "types": ["node"]
+  },
+  "include": ["lib/claude/sidecar/main.ts", "lib/claude/sidecar/setup.ts", "lib/claude/sidecar/restart-helper.ts"],
+  "exclude": ["node_modules", "dist", "lib/**/__tests__/**"]
+}

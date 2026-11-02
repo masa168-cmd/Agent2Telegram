@@ -101,6 +101,11 @@ export function findBotById(registry: BotRegistry, id: string): BotRecord | unde
   return registry.bots.find((bot) => bot.id === id);
 }
 
+/** The Bot this agent uses: the default, else the first. Same rule as the gateway's `defaultBot`. */
+export function agentBot(registry: BotRegistry): BotRecord | undefined {
+  return (registry.defaultBotId ? findBotById(registry, registry.defaultBotId) : undefined) ?? registry.bots[0];
+}
+
 export function findBotByName(registry: BotRegistry, name: string): BotRecord | undefined {
   const lower = name.toLowerCase();
   return registry.bots.find((bot) => bot.name.toLowerCase() === lower);
@@ -228,8 +233,10 @@ export async function resetProjectBindingCursor(cwd: string, updateId: number): 
  * Resolve the Telegram configuration for a given working directory.
  *
  * 1. Walk up from `cwd` to find `<project>/.pi/telegram.json`.
- *    - Found: botId = binding.botId ?? registry.defaultBotId; prefs from binding; runtime state from binding.
- *    - Not found: use registry.defaultBotId; prefs = defaults; no persisted runtime state.
+ *    - Found: prefs from binding; runtime state from binding.
+ *    - Not found: prefs = defaults; no persisted runtime state.
+ *    The bot is always agentBot(registry) (default, else first): the gateway
+ *    polls that one only, so an old binding.botId is ignored.
  * 2. No bot resolves (no botId and no defaultBotId) → telegram not configured.
  * 3. Materialize ResolvedTelegramConfig from BotRecord + project prefs + runtime state.
  */
@@ -237,18 +244,7 @@ export async function resolveTelegramConfig(cwd: string): Promise<ResolvedTelegr
   const registry = await readBotRegistry();
   const project = await readProjectBinding(cwd);
 
-  const projectBotId = project?.binding.botId;
-  let bot: BotRecord | undefined;
-  if (projectBotId) {
-    bot = findBotById(registry, projectBotId);
-    // Dangling ref (bot removed): fall back to defaultBotId so the project
-    // stays connected instead of silently becoming unconfigured.
-    if (!bot && registry.defaultBotId) {
-      bot = findBotById(registry, registry.defaultBotId);
-    }
-  } else if (registry.defaultBotId) {
-    bot = findBotById(registry, registry.defaultBotId);
-  }
+  const bot = agentBot(registry);
 
   const config = materializeTelegramConfig(bot, project?.binding);
 
@@ -368,14 +364,7 @@ export async function persistProjectRuntimeState(
 
     // Materialize from the snapshot registry + just-written binding (no
     // re-entrant registry read inside the lock).
-    const botId = binding.botId ?? registry.defaultBotId;
-    let bot: BotRecord | undefined;
-    if (botId) {
-      bot = findBotById(registry, botId);
-      if (!bot && binding.botId && registry.defaultBotId) {
-        bot = findBotById(registry, registry.defaultBotId);
-      }
-    }
+    const bot = agentBot(registry);
     return {
       registry,
       bot,
@@ -564,14 +553,15 @@ function isLegacyFlatConfig(value: unknown): value is TelegramConfig {
 
 // ── Bot registry CRUD helpers ─────────────────────────────────────────────
 
+export const ONE_BOT_TEXT = "每个 Agent 只能有一个 Bot；更换请先 Remove 现有 Bot，或在终端运行 a2t setup pi。";
+
 export async function addBot(bot: BotRecord): Promise<BotRegistry> {
   return await withTelegramConfigLock(async () => {
     const registry = await readBotRegistryUnsafe();
+    // One agent, one Bot: the gateway polls only that one.
+    if (registry.bots.length > 0) throw new Error(ONE_BOT_TEXT);
     registry.bots.push(bot);
-    // First bot becomes default automatically.
-    if (registry.bots.length === 1 && !registry.defaultBotId) {
-      registry.defaultBotId = bot.id;
-    }
+    registry.defaultBotId = bot.id;
     await writeBotRegistry(registry);
     return registry;
   });

@@ -25,7 +25,8 @@ Agent2Telegram 的 Pi 部分：面向 **Pi coding agent 1.4.0** 的 Telegram 扩
 | tree / compact | 不换话题；绑定读取全部 custom entries，不只当前分支 |
 | 同一目录再启动第二个 Pi | 第二个不接入 Telegram，只能在 SSH 中使用 |
 | General、未知话题、错误群/用户、过期按钮 | 不交给 Pi；必要时仅在原处提示拒绝 |
-| 话题已关闭或已删除 | 暂不自动处理（已知限制）：关闭的话题在 Telegram 里重新打开即可；删除的话题需从对照表删掉该目录一行，再 `a2t gateway restart` 并重启 Pi |
+| 话题已关闭 | Pi 接入时网关自动重开并沿用 |
+| 话题已删除（Telegram 明确返回） | Pi 接入时网关自动新建一次并更新对照表；Pi 在线期间删除的话题，下次接入（重启 Pi 或网关）时新建 |
 | 建话题失败 | Pi 终端显示原因，过一会儿自动重新登记 |
 
 **旧绑定迁移**：旧版本写在会话里的 `pi-telegram-plus-ex.forum-binding` 只在该目录还没有对照记录时用一次，作为初始话题；新版本不再写入会话。
@@ -57,7 +58,7 @@ Agent2Telegram 的 Pi 部分：面向 **Pi coding agent 1.4.0** 的 Telegram 扩
 
 ### Bot 注册表
 
-沿用 plus 的 `tg.json` 格式，位置是 `~/.agent2telegram/pi/tg.json`（显式设置 `PI_CODING_AGENT_DIR` 时用该目录；旧版的 `~/.pi/agent/tg.json` 在 `a2t migrate` 之前仍会被读取）。论坛模式下，Telegram 话题的 `/tg` 不显示全局 Bot/项目维护入口；请用 `a2t setup pi` 或 **SSH 中的 `/tg` → Bots** 录入和替换。每个 Agent 只用注册表里的默认 Bot（网关收的就是它），`/tg` → Project 不再选 Bot。`forumChatId` 可通过本地 Bots 的更新字段设置；关闭论坛模式用 `off`。
+沿用 plus 的 `tg.json` 格式，位置是 `~/.agent2telegram/pi/tg.json`（显式设置 `PI_CODING_AGENT_DIR` 时用该目录；旧版的 `~/.pi/agent/tg.json` 在 `a2t migrate` 之前仍会被读取）。论坛模式下，Telegram 话题的 `/tg` 不显示全局 Bot/项目维护入口；请用 `a2t setup pi`（替换）或 **SSH 中的 `/tg` → Bots** 录入。**一个 Agent 只能有一个 Bot**（一个 Bot 下每个目录一个话题）：已有 Bot 时不能再添加，要换请先 Remove 或运行 `a2t setup pi`，再 `a2t gateway restart`。目录绑定里旧版本留下的 `botId` 会被忽略。`forumChatId` 可通过本地 Bots 的更新字段设置；关闭论坛模式用 `off`。
 
 示例仅展示格式，尖括号必须在 SSH 中替换；不要提交文件或在聊天里发送 Token：
 

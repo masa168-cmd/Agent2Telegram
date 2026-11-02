@@ -145,18 +145,18 @@ describe("resolveTelegramConfig — project binding walk-up", () => {
     expect(result.config).toEqual({});
   });
 
-  it("uses project binding botId over defaultBotId", async () => {
+  it("ignores an old project binding botId: the agent uses its default Bot, as the gateway does", async () => {
     const defaultBot = makeBot({ name: "default", token: "default-tok" });
     const projectBot = makeBot({ name: "project", token: "project-tok" });
-    await addBot(defaultBot);
-    await addBot(projectBot);
+    // An older registry may still hold two Bots; addBot no longer allows that.
+    await writeBotRegistry({ version: 3, bots: [defaultBot, projectBot], defaultBotId: defaultBot.id });
 
     await writeProjectBinding(projectDir, { botId: projectBot.id, enabled: true });
 
     const result = await resolveTelegramConfig(projectDir);
     expect(result.hasProjectBinding).toBe(true);
-    expect(result.bot?.id).toBe(projectBot.id);
-    expect(result.config.botToken).toBe("project-tok");
+    expect(result.bot?.id).toBe(defaultBot.id);
+    expect(result.config.botToken).toBe("default-tok");
   });
 
   it("walks up to find .pi/telegram.json in a parent directory", async () => {
@@ -185,20 +185,6 @@ describe("resolveTelegramConfig — project binding walk-up", () => {
     expect(result.hasProjectBinding).toBe(true);
     expect(result.bot?.id).toBe(defaultBot.id);
     expect(result.config.tool).toBe("brief");
-  });
-
-  it("falls back to defaultBotId when project binding references a removed bot", async () => {
-    const defaultBot = makeBot({ name: "default", token: "default-tok" });
-    const projectBot = makeBot({ name: "project", token: "project-tok" });
-    await addBot(defaultBot); // becomes default
-    await addBot(projectBot);
-    await writeProjectBinding(projectDir, { botId: projectBot.id, enabled: true });
-    await removeBot(projectBot.id); // project bot removed → binding now dangles
-
-    const result = await resolveTelegramConfig(projectDir);
-    expect(result.hasProjectBinding).toBe(true);
-    expect(result.bot?.id).toBe(defaultBot.id); // fell back to default
-    expect(result.config.botToken).toBe("default-tok");
   });
 
   it("returns no bot when a dangling ref has no default to fall back to", async () => {
@@ -251,11 +237,12 @@ describe("Bot registry CRUD", () => {
     expect(registry.defaultBotId).toBe(bot.id);
   });
 
-  it("addBot does not override existing default", async () => {
+  it("addBot refuses a second Bot: one agent, one Bot", async () => {
     const bot1 = makeBot({ name: "first" });
-    const bot2 = makeBot({ name: "second" });
     await addBot(bot1);
-    const registry = await addBot(bot2);
+    await expect(addBot(makeBot({ name: "second" }))).rejects.toThrow(/只能有一个 Bot/);
+    const registry = await readBotRegistry();
+    expect(registry.bots.map(b => b.id)).toEqual([bot1.id]);
     expect(registry.defaultBotId).toBe(bot1.id);
   });
 
@@ -283,9 +270,7 @@ describe("Bot registry CRUD", () => {
   it("removeBot promotes remaining bot to default when removing the default", async () => {
     const bot1 = makeBot({ name: "first" });
     const bot2 = makeBot({ name: "second" });
-    await addBot(bot1);
-    await addBot(bot2);
-    // bot1 is default
+    await writeBotRegistry({ version: 3, bots: [bot1, bot2], defaultBotId: bot1.id }); // older two-Bot registry
     await removeBot(bot1.id);
     const registry = await readBotRegistry();
     expect(registry.defaultBotId).toBe(bot2.id);
@@ -294,8 +279,7 @@ describe("Bot registry CRUD", () => {
   it("setDefaultBot changes the default", async () => {
     const bot1 = makeBot({ name: "a" });
     const bot2 = makeBot({ name: "b" });
-    await addBot(bot1);
-    await addBot(bot2);
+    await writeBotRegistry({ version: 3, bots: [bot1, bot2], defaultBotId: bot1.id }); // older two-Bot registry
     await setDefaultBot(bot2.id);
     const registry = await readBotRegistry();
     expect(registry.defaultBotId).toBe(bot2.id);

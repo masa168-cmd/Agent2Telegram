@@ -163,7 +163,7 @@ interface AgentAdapter {
 6. 关闭功能用的常量 `PROCESS_MESSAGES_ENABLED`、`STREAM_PREVIEW_ENABLED`，旧代码仍在。4b 调查发现预览记录还承担「最终答案发送租约」，删除需先补专门测试，暂缓。
 7. 界面中英文混用。
 8. 遗留：`scripts/e2e/run-e2e-commands.mjs` 已改为检查 Telegram 拒绝 `/quit`、`/exit`（该脚本需真实 Pi，未运行）。`forum-multiprocess.test.ts` 随 4b 删除多实例选主一并删除。
-9. 4b 遗留：Pi 话题被关闭或删除时不再自动重开或新建（原由 Pi 的路由处理，现在 Pi 直接发送、网关未接手）；Pi 目录绑定里旧的 `botId` 仍被读取，若与默认 Bot 不同会和网关不一致（本机只有一个 Bot，不受影响）。
+9. 4b 收尾（11-02）：会话接入时网关先「重开」记录的话题——已关闭的重开，已删除的新建一次，其他错误（如网络）沿用原话题、不阻止接入；Pi 与 Claude 共用。一个 Agent 只能有一个 Bot：`addBot` 已有 Bot 时拒绝，Pi 的 `/tg → Bots` 只在没有 Bot 时显示「添加」，删除「默认 Bot」选择与清除、目录绑定到其他 Bot 的流程；目录绑定里旧的 `botId` 被忽略，Pi 与网关用同一规则选 Bot（默认，否则第一个）。
 
 ## 7. 分阶段计划（每阶段单独确认）
 

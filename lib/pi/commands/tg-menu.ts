@@ -1,7 +1,7 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { forumTopicLink } from "../../core/forum-binding.ts";
 import { basename } from "node:path";
-import { readBotRegistry, readProjectBinding } from "../../core/config.ts";
+import { agentBot, readBotRegistry } from "../../core/config.ts";
 import type { MenuUi, TelegramCommandDeps, TelegramConnectionState } from "./telegram-commands.ts";
 import type { TgConfigDeps, SessionDeps } from "./register.ts";
 import type { BotRecord, BotRegistry, TelegramConfig } from "../../core/types.ts";
@@ -14,10 +14,8 @@ import { getCurrentTelegramTurn } from "../../core/turn-context.ts";
 import { formatDebugReport } from "./info.ts";
 import {
   addBotFlow,
-  clearBotDefaultFlow,
   regeneratePairingCodeFlow,
   unpairBotFlow,
-  setBotDefaultFlow,
   updateBotFlow,
   removeBotFlow,
   enableProjectFlow,
@@ -38,8 +36,6 @@ const MAIN_MENU_OPTIONS = [
 
 const BOTS_MENU_ADD = "➕ Add bot";
 const BOTS_MENU_LIST = "Bot list";
-const BOTS_MENU_DEFAULT_PREFIX = "⭐ Default bot: ";
-const CLEAR_DEFAULT_LABEL = "Clear default";
 
 const BOT_ACTION_UPDATE = "Update";
 const BOT_ACTION_PAIRING = "Pairing";
@@ -200,51 +196,17 @@ async function commandsMenu(ui: MenuUi, deps: CommandMenuDeps): Promise<void> {
 
 async function botsMenu(ui: MenuUi, deps: TelegramCommandDeps, cwd: string): Promise<boolean> {
   while (true) {
-    // Re-read each iteration so the "Default bot" line always shows the
-    // current default (or "not set").
+    // One agent, one Bot: offer "Add" only while there is none.
     const registry = await readBotRegistry();
-    const defaultBot = registry.bots.find((b) => b.id === registry.defaultBotId);
-    const defaultChoice = `${BOTS_MENU_DEFAULT_PREFIX}${defaultBot?.name ?? "not set"}`;
-    const choice = await pick(ui, "🤖 Bots", [BOTS_MENU_ADD, BOTS_MENU_LIST, defaultChoice, BACK_LABEL]);
+    const choice = await pick(ui, "🤖 Bots", [...(registry.bots.length === 0 ? [BOTS_MENU_ADD] : []), BOTS_MENU_LIST, BACK_LABEL]);
     if (!choice || choice === BACK_LABEL) return true; // back to main
 
     if (choice === BOTS_MENU_ADD) {
       await addBotFlow(ui, deps);
     } else if (choice === BOTS_MENU_LIST) {
       await botListMenu(ui, deps, cwd);
-    } else if (choice === defaultChoice) {
-      await defaultBotMenu(ui, deps, cwd);
     }
     // loop re-renders the Bots submenu
-  }
-}
-
-// ── Global default bot (the default is set ONLY here) ──────────────────────
-
-async function defaultBotMenu(ui: MenuUi, deps: TelegramCommandDeps, cwd: string): Promise<void> {
-  while (true) {
-    const registry = await readBotRegistry();
-    if (registry.bots.length === 0) {
-      ui.notify(`No bots registered. Use ${BOTS_MENU_ADD} first.`, "info");
-      return;
-    }
-    // The current default is ⭐-marked via formatBotLabel; "Clear default" only exists
-    // while a default actually is set.
-    const choices = registry.bots.map((b) => formatBotLabel(b, registry));
-    const selected = await pick(ui, "⭐ Default bot", [
-      ...choices,
-      ...(registry.defaultBotId ? [CLEAR_DEFAULT_LABEL] : []),
-      BACK_LABEL,
-    ]);
-    if (!selected || selected === BACK_LABEL) return; // back to Bots submenu
-
-    if (selected === CLEAR_DEFAULT_LABEL) {
-      if (await clearBotDefaultFlow(ui, deps, cwd)) throw new MenuClosed();
-      continue;
-    }
-    const bot = registry.bots[choices.indexOf(selected)];
-    if (bot && await setBotDefaultFlow(ui, bot.id, deps, cwd)) throw new MenuClosed();
-    // loop re-renders the picker (the ⭐ marker may have moved)
   }
 }
 
@@ -282,8 +244,6 @@ async function botDetailMenu(
       ui.notify("Bot no longer exists.", "info");
       return; // removed elsewhere → back to bot list
     }
-    // The global default is set only in the ⭐ Default bot submenu; this page
-    // holds the bot's own actions.
     const choice = await pick(ui, `🤖 ${botNow.name}`, [BOT_ACTION_UPDATE, BOT_ACTION_PAIRING, BOT_ACTION_REMOVE, BACK_LABEL]);
     if (!choice || choice === BACK_LABEL) return; // back to bot list
 
@@ -346,17 +306,9 @@ function connectionChoice(state: TelegramConnectionState): string {
 
 async function projectMenu(ui: MenuUi, deps: TelegramCommandDeps, cwd: string): Promise<boolean> {
   while (true) {
-    const [registry, project] = await Promise.all([readBotRegistry(), readProjectBinding(cwd)]);
-    const boundBotId = project?.binding.botId;
-    // A binding without botId = follows the global default bot (a `{ enabled: false }`
-    // disconnect record also counts as following the default, not "bound").
-    const followsDefault = !boundBotId;
-    const effectiveBotId = boundBotId ?? registry.defaultBotId;
-    const effectiveBot = effectiveBotId ? registry.bots.find((b) => b.id === effectiveBotId) : undefined;
-
-    const botLabel = effectiveBot
-      ? `Bot: ${effectiveBot.name}${followsDefault ? " (default)" : ""}`
-      : "Bot: not set";
+    // The agent's one Bot (an old binding botId is ignored, as the gateway does).
+    const effectiveBot = agentBot(await readBotRegistry());
+    const botLabel = effectiveBot ? `Bot: ${effectiveBot.name}` : "Bot: not set";
 
     const connection = deps.connectionState();
     const connectLabel = connectionChoice(connection);
@@ -372,7 +324,7 @@ async function projectMenu(ui: MenuUi, deps: TelegramCommandDeps, cwd: string): 
     if (choice === botLabel) {
       // Each agent has one Bot (its default) and the gateway polls it.
       ui.notify(effectiveBot
-        ? "每个 Agent 只用自己的默认 Bot；更换 Bot 请在终端运行 a2t setup pi，然后 a2t gateway restart。"
+        ? "每个 Agent 只有一个 Bot；更换 Bot 请在终端运行 a2t setup pi，然后 a2t gateway restart。"
         : "还没有配置 Bot：在终端运行 a2t setup pi。", "info");
     } else if (choice === connectLabel) {
       if (connection === "disconnected") {

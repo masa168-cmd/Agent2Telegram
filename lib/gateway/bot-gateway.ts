@@ -173,11 +173,15 @@ export class BotGateway {
     if (!key || config.allowedUserId === undefined) return undefined;
     const store = await this.readTopics();
     const known = store.topics[key];
-    if (known && typeof known.threadId === "number") return (session.threadId = known.threadId);
-    if (session.legacyThreadId !== undefined && Number.isSafeInteger(session.legacyThreadId) && session.legacyThreadId > 0) {
-      store.topics[key] = { threadId: session.legacyThreadId, cwd: session.cwd, updatedAt: new Date(this.now()).toISOString() };
-      await this.writeTopics(store);
-      return (session.threadId = session.legacyThreadId);
+    const legacy = session.legacyThreadId !== undefined && Number.isSafeInteger(session.legacyThreadId)
+      && session.legacyThreadId > 0 ? session.legacyThreadId : undefined;
+    const candidate = known && typeof known.threadId === "number" ? known.threadId : legacy;
+    if (candidate !== undefined && await this.topicExists(config.forumChatId!, candidate)) {
+      if (known?.threadId !== candidate) {
+        store.topics[key] = { threadId: candidate, cwd: session.cwd, updatedAt: new Date(this.now()).toISOString() };
+        await this.writeTopics(store);
+      }
+      return (session.threadId = candidate);
     }
     const name = forumTopicName(session.cwd);
     const created = await this.deps.api<{ message_thread_id: number }>("createForumTopic", { chat_id: config.forumChatId, name });
@@ -185,6 +189,20 @@ export class BotGateway {
     await this.writeTopics(store);
     this.push(session, { type: "log", text: `Telegram 话题已创建：${name}` });
     return (session.threadId = created.message_thread_id);
+  }
+
+  /**
+   * Reopen the topic (a closed one opens again; an open one answers TOPIC_NOT_MODIFIED).
+   * False only when Telegram says it was deleted; other errors keep the topic.
+   */
+  private async topicExists(chatId: number, threadId: number): Promise<boolean> {
+    try {
+      await this.deps.api("reopenForumTopic", { chat_id: chatId, message_thread_id: threadId });
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      if (/TOPIC_ID_INVALID|MESSAGE_THREAD_INVALID|thread not found|TOPIC_DELETED/i.test(text)) return false;
+    }
+    return true;
   }
 
   private async forgetTopic(session: Session): Promise<void> {

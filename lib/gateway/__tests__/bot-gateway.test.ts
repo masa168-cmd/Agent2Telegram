@@ -23,11 +23,14 @@ function setup(initial: TelegramConfig = { botToken: TOKEN, forumChatId: CHAT, a
   if (!options.dataDir) dirs.push(dataDir);
   let config: TelegramConfig = { ...initial };
   let nextThread = 77;
+  // Telegram's answer to reopenForumTopic for an existing topic: open by default.
+  let reopenError: string | undefined = "Bad Request: TOPIC_NOT_MODIFIED";
   const sent: Array<{ chatId: number; text: string; threadId?: number }> = [];
   const buttons: Array<{ text: string; rows: Button[][]; threadId?: number }> = [];
   const api = vi.fn(async (method: string, _body: Record<string, unknown>) => {
     if (method === "createForumTopic") return { message_thread_id: nextThread++ };
     if (method === "setMyCommands") return true;
+    if (method === "reopenForumTopic") { if (reopenError) throw new Error(reopenError); return true; }
     throw new Error(`unexpected ${method}`);
   });
   const sendText = vi.fn(async (chatId: number, text: string, threadId?: number) => {
@@ -57,7 +60,7 @@ function setup(initial: TelegramConfig = { botToken: TOKEN, forumChatId: CHAT, a
     typingIntervalMs: 1_000,
   });
   return { gateway, dataDir, sent, buttons, api, sendText, sendChatAction, editText, answerCallbackQuery, startRestart,
-    getConfig: () => config };
+    getConfig: () => config, setReopenError: (text: string | undefined) => { reopenError = text; } };
 }
 
 function topicMessage(text: string, threadId = 77, from = USER): TelegramUpdate {
@@ -87,7 +90,38 @@ describe("BotGateway sessions and topics", () => {
 
     const restarted = setup(undefined, { dataDir: t.dataDir });
     expect(await restarted.gateway.open({ connId: "a2", cwd: "/work/alpha" })).toMatchObject({ ok: true, threadId: 77 });
-    expect(restarted.api).not.toHaveBeenCalled();
+    expect(restarted.api.mock.calls.map(c => c[0])).toEqual(["reopenForumTopic"]);
+  });
+
+  it("reopens a closed topic when a session connects, and keeps it", async () => {
+    const t = setup();
+    await t.gateway.open({ connId: "a", cwd: "/work/alpha" });
+    t.gateway.close("a");
+    t.setReopenError(undefined); // the topic was closed: reopening succeeds
+    expect(await t.gateway.open({ connId: "b", cwd: "/work/alpha" })).toMatchObject({ ok: true, threadId: 77 });
+    expect(t.api).toHaveBeenCalledWith("reopenForumTopic", { chat_id: CHAT, message_thread_id: 77 });
+    expect(t.api.mock.calls.filter(c => c[0] === "createForumTopic")).toHaveLength(1);
+  });
+
+  it("makes a new topic once when the recorded one was deleted", async () => {
+    const t = setup();
+    await t.gateway.open({ connId: "a", cwd: "/work/alpha" });
+    t.gateway.close("a");
+    t.setReopenError("Bad Request: TOPIC_ID_INVALID");
+    expect(await t.gateway.open({ connId: "b", cwd: "/work/alpha" })).toMatchObject({ ok: true, threadId: 78 });
+    t.gateway.close("b");
+    t.setReopenError("Bad Request: TOPIC_NOT_MODIFIED");
+    expect(await t.gateway.open({ connId: "c", cwd: "/work/alpha" })).toMatchObject({ ok: true, threadId: 78 });
+    expect(t.api.mock.calls.filter(c => c[0] === "createForumTopic")).toHaveLength(2);
+  });
+
+  it("keeps the recorded topic when the check fails for another reason", async () => {
+    const t = setup();
+    await t.gateway.open({ connId: "a", cwd: "/work/alpha" });
+    t.gateway.close("a");
+    t.setReopenError("fetch failed");
+    expect(await t.gateway.open({ connId: "b", cwd: "/work/alpha" })).toMatchObject({ ok: true, threadId: 77 });
+    expect(t.api.mock.calls.filter(c => c[0] === "createForumTopic")).toHaveLength(1);
   });
 
   it("asks for pairing and makes no topic before a user is paired", async () => {
@@ -392,7 +426,7 @@ describe("BotGateway rich mode (Pi)", () => {
   it("adopts the topic a session already knew instead of creating one", async () => {
     const t = setup(undefined, { rich: true });
     expect(await t.gateway.open({ connId: "a", cwd: "/work/alpha", legacyThreadId: 135 })).toMatchObject({ ok: true, threadId: 135 });
-    expect(t.api).not.toHaveBeenCalled();
+    expect(t.api.mock.calls.map(c => c[0])).toEqual(["reopenForumTopic"]);
   });
 
   it("reads Pi's existing topic map, and treats an unknown-result create as absent", async () => {
@@ -407,6 +441,6 @@ describe("BotGateway rich mode (Pi)", () => {
     const t = setup(undefined, { rich: true, topicsPath });
     expect(await t.gateway.open({ connId: "a", cwd: "/work/alpha" })).toMatchObject({ ok: true, threadId: 604 });
     expect(await t.gateway.open({ connId: "b", cwd: "/work/beta" })).toMatchObject({ ok: true, threadId: 77 });
-    expect(t.api).toHaveBeenCalledTimes(1);
+    expect(t.api.mock.calls.filter(c => c[0] === "createForumTopic")).toHaveLength(1);
   });
 });

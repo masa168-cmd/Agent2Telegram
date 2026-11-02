@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- Renamed to **agent2telegram**. One-line install/upgrade (`install.sh`) and the `a2t` command (`status`, `setup`, `enable`/`disable` per directory, `gateway`, `migrate`, `uninstall`). Everything lives under `~/.agent2telegram/`; Pi's Telegram data moves there from `~/.pi/agent` (read in place until `a2t migrate --apply`), per-directory Pi bindings are stored centrally instead of `<dir>/.pi/telegram.json`, uploads go to `~/.agent2telegram/cache/uploads/`. `/tg-setup` is replaced by `a2t enable pi`.
+
+- Claude Code support: a Claude Code plugin (mod) plus one long-lived gateway per Bot (`agent2telegram-claude` systemd user service). Each enabled directory gets its own forum topic; prompts, final answers, typing, `/stop`, `/compact`, `/clear`, `/usage`, `/restart` (tmux, resumes the same session with its original flags); permission dialogs and AskUserQuestion are answered first-wins from the terminal or Telegram.
+
+- A Bot is claimed by one agent (`~/.agent2telegram/bots/`); the Claude gateway refuses a Bot claimed by another agent or used by a live Pi.
+
 - Forum mode: an unpaired Bot now accepts `/pair <code>` in a private chat with the Bot (previously every update was dropped before pairing could run, so a forum Bot could never be paired from Telegram). Group messages stay ignored until a user is paired.
 
 - Pairing codes now expire 10 minutes after creation and are cancelled after 5 wrong `/pair` attempts; `/pair` is accepted only in a private chat. Codes stored without an expiry (older configs) count as expired and are replaced at startup for unpaired bots.

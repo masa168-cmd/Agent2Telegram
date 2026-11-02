@@ -1,177 +1,124 @@
-# pi-telegram-plus-ex
+# Agent2Telegram
 
-面向 **Pi coding agent 1.4.0** 的 Telegram 扩展：**一个 Bot，每个 Pi 启动目录一个论坛话题**。以 [pi-telegram-plus](https://github.com/jalyfeng/pi-telegram-plus/tree/50d39ff9b2e0ad60d165920956a5bd92ff078891) 为主体，补充会话绑定和本机多实例路由，保留命令、交互、文件与输出能力。
+在 Telegram 里操作本机正在运行的 AI 编程 Agent：**每个 Agent 一个 Bot、一个论坛群，每个工作目录一个话题**。Telegram 与终端里是**同一个**会话，两边都能发任务、看回复、中断、答复审批和选择题，先答的一方生效。
 
-> **0.1.0 是离线验证候选版本，尚未发布到 npm 或上线。** 离线测试不代表真实 Telegram、真实模型或原生 TUI 已验收。本轮未安装到正在运行的 Pi、未连接真实 Bot。源码提交或同步不等于 npm 发布、部署或运行验收。源码交付仓库为 [masa168-cmd/pi-telegram-plus-ex](https://github.com/masa168-cmd/pi-telegram-plus-ex) 的 `main`；是否已同步请以该仓库的实际提交为准。
+目前支持：
 
-## 能做什么
+| Agent | 状态 | 接入方式 |
+| --- | --- | --- |
+| [Pi coding agent](https://pi.dev) 1.4.0 | 可用 | Pi 扩展（在 Pi 进程内） |
+| [Claude Code](https://code.claude.com) 2.1.316+ | 可用 | Claude Code 插件（mod）+ 常驻网关 |
+| Codex | 计划中 | — |
 
-- **只控制在线 Pi**：一个实例收取 Bot 更新，按话题交给对应的本机 Pi；每个在线实例可独立向自己的话题发送结果。收件者退出后由其他在线实例接管。
-- **日常遥控**：普通提示词、模型/思考量、状态、停止、压缩、会话导航等，沿用 plus 的命令网关和宿主命令。实际可用项目取决于 Pi 的命令目录与可识别界面。命令缺少必填的固定选项时，Telegram 会显示交互菜单；缺少自定义文本时，现有命令会要求输入；显式提供参数则直接执行。
-- **交互**：结构化选择、确认、输入及已识别的审批；非敏感本地弹窗也可在手机回答，本地和手机先回答的一方生效。
-- **回复发送**：Telegram 不显示「🤖 正在输出…」流式预览（输出时无法判断后面是否还有工具调用，中间说明会一闪而过）；每段回复结束后，最终答案作为完整格式化消息发出，长结果分片发送。任务进行中由 Telegram「正在输入…」状态表示仍在工作，也可发 `/status` 查看 `state`。Telegram 默认不显示「⚙️ 过程」思考/工具进度合并消息；明确的工具失败和 `full` 模式工具结果仍可显示。
-- **文件与图片**：手机发来的附件存入缓存目录 `~/.cache/pi-telegram/uploads/<启动目录名>/`（遵循 `XDG_CACHE_HOME`，不写入项目目录，不自动清理），使用清理后的随机文件名、不覆盖已有文件；模型的附件工具、图片、代码文件及 typing 都固定到绑定话题。编辑/删除仅允许本代次登记的 Bot 消息。
-- **在线会话列表**：`/tg` → `🧵 Online sessions` 给出各在线话题链接；这是切换聊天位置，不是抢占收件者，也不搬运历史。
-- **上下文预算**：`/context-budget` 为当前目录的多个聊天模型分别配置窗口与压缩阈值；SSH 与 Telegram 共用标准菜单，实际值可单独查询。依赖下述 Pi 1.4.0 实例级兼容适配，真实加载/手机验收另行进行。
+## 安装
 
-这不是 Pi 进程管理器：**不启动离线会话、不守护或重启 Pi、不建立 SSH/tmux 环境**。启动故障、凭据和应急维护通过手机 SSH 处理。
+需要 Linux、Node.js ≥ 22.19、npm、curl。
 
-## 会话与话题规则
+```bash
+curl -fsSL https://raw.githubusercontent.com/masa168-cmd/Agent2Telegram/main/install.sh | bash
+```
 
-| Pi 操作 | 话题归属 |
+安装脚本会询问接入哪些 Agent（也可加参数：`… | bash -s -- --pi --claude`），然后：
+
+- 把程序装到 `~/.agent2telegram/app`，在本机安装依赖并编译；
+- 建立命令 `a2t`（`~/.local/bin/a2t`）；
+- Claude Code：把插件装成本地插件（直接从 `~/.agent2telegram/app` 读取），并安装用户级 systemd 服务 `agent2telegram-claude`（网关）。
+
+**脚本不会询问或保存 Bot Token。** 重复运行同一条命令即是升级，配置和数据不受影响。
+
+> 网关是 systemd 用户服务。要在 SSH 全部断开后仍然运行，需要开启 linger：`loginctl enable-linger $USER`。
+
+## 配置
+
+1. 在 [@BotFather](https://t.me/BotFather) 为每个 Agent 各建一个 Bot；各建一个**开启话题（Topics）的私密超级群**，把对应 Bot 设为管理员，并给「管理话题」权限。
+2. 在终端运行（Token 只在这里输入，输入时不显示）：
+
+   ```bash
+   a2t setup pi        # 或
+   a2t setup claude
+   ```
+
+   需要填：Bot Token、论坛群 ID（以 `-100` 开头：复制群里任意消息的链接 `t.me/c/<数字>/…`，在 `<数字>` 前加 `-100`）、你的 Telegram 用户 ID（可留空，留空则按提示私聊 Bot 发 `/pair <配对码>` 完成配对）。
+
+3. Claude Code 配置后重启网关：`a2t gateway restart`。
+
+## 按目录开启
+
+只有开启过的目录才会接入 Telegram（子目录跟随父目录）：
+
+```bash
+cd ~/my-project
+a2t enable pi       # 之后在该目录启动 pi
+a2t enable claude   # 该目录的 Claude Code 会话约 30 秒内自动接入
+```
+
+`a2t disable pi|claude [目录]` 关闭。群里会为每个目录自动建一个话题，话题名是目录名；同一目录同时只接一个会话。
+
+## 在 Telegram 里使用
+
+在对应目录的话题里直接发文字，就是给 Agent 发任务；回合结束后最终回复发回话题，工作期间显示「正在输入…」。
+
+**Claude Code** 话题里的 `/` 菜单：
+
+| 命令 | 作用 |
 | --- | --- |
-| startup / resume 同一个已保存会话 | 按 Bot、群及完整 sessionId 恢复原绑定 |
-| 话题归属键 | Pi 启动目录的真实路径（`realpath(cwd)`）；对照表存于 `~/.pi/agent/tg-runtime/<tokenHash>/topics.json` |
-| new / fork / clone / resume，或同目录重新启动 Pi | 沿用该目录的话题，并在话题里发一条“— 会话 xxxx 已接入 —”分隔消息 |
-| 话题名 | 相对 home 的路径（home 本身为 `~`，home 外为绝对路径），最长 128 字符 |
-| tree / compact | 不换话题；绑定读取全部 custom entries，不只当前分支 |
-| 同一目录再启动第二个 Pi | 第二个不接入 Telegram，只能在 SSH 中使用 |
-| 同会话或同群/话题被另一在线实例占用 | 拒绝重复占用，不猜测控制目标 |
-| General、未知话题、错误群/用户、过期按钮 | 不交给 Pi；必要时仅在原处提示拒绝 |
-| 话题已关闭 | 自动重开并沿用 |
-| 话题已删除（Telegram 明确返回） | 自动新建一次并更新对照表 |
-| 创建请求结果未知、对照表损坏 | 停止接入，要求先查 Telegram，再在 SSH 中 `/tg-forum retry`，不自动重试 |
+| `/stop` | 中断当前回合 |
+| `/compact` | 压缩上下文 |
+| `/clear` | 清空对话 |
+| `/usage` | 5 小时与每周用量、重置时间、本会话花费 |
+| `/restart` | 重启 Claude Code 并接回同一会话，保留原启动参数（仅当它运行在 tmux 窗格里） |
 
-**旧绑定迁移**：旧版本写在会话里的 `pi-telegram-plus-ex.forum-binding` 只在该目录还没有对照记录时用一次，作为初始话题；新版本不再写入会话。
+- **审批**：Claude 请求权限时，话题里出现「✅ 允许 / ❌ 拒绝」；终端的审批框同时存在，先答的一方生效，另一边自动收回。
+- **选择题**：按选项出按钮，另有「✏️ 自定义输入」（下一条文字即答案）和「💬 先聊聊」；多个问题逐题提问。
+- 终端里来自 Telegram 的消息会标注 “Prompt from the agent2telegram plugin”，Claude 读到的是你的原话。
 
-**旧版持久化限制（仅针对上述旧绑定）**：绑定使用公开的 `pi.appendEntry()` custom entry，不进入模型消息上下文。Pi 1.4.0 的空白会话只有 setup/custom entries 时尚不落盘，第一条真实 user/assistant 消息才刷新文件；`--no-session` 始终只是内存状态。未有首条消息前退出进程，可能遗留无法自动恢复的话题。不要把“内存中绑定成功”当作“已保存到磁盘”。
+**Pi** 的命令、菜单与话题规则见 [docs/pi.md](docs/pi.md)。
 
-## 运行前提与安全边界
+## a2t 命令
 
-1. Node.js `>=22.19.0`；目标 Pi **1.4.0**。本次离线检查使用 Node 22.22.1。保留的 OMP 适配不等于本 fork 已支持/验收 OMP。
-2. **本人和 Bot 的私密超级群，启用 Topics**。Bot 必须能发送文本/附件，并有管理话题的权限以创建、重开话题。确认普通文本和文件也能收到，不只 slash 命令。
-3. 用真实个人账户发消息；匿名管理员、代频道发言和其他 Bot 不作为授权用户。
-4. 同一 Token 的全部在线 Pi 必须使用本扩展的相同兼容版本，并共享当前用户的 agent 目录。**不能同时装载原 plus、mux，或运行其他 getUpdates/webhook 消费者**。
-5. 本机心跳/路由目录必须只有当前系统用户可访问；IPC 只监听 `127.0.0.1`，随机 capability 放在私有心跳文件，不通过 Telegram 展示。不要开放端口、共享该目录或跨不信任用户复用。
+| 命令 | 作用 |
+| --- | --- |
+| `a2t status` | 查看安装、网关、已开启的目录 |
+| `a2t setup <pi\|claude>` | 配置 Bot |
+| `a2t enable / disable <pi\|claude> [目录]` | 按目录开启 / 关闭 |
+| `a2t gateway <restart\|status\|logs>` | Claude 网关服务 |
+| `a2t migrate [--apply]` | 迁移旧版本数据（默认只列清单；执行前自动备份） |
+| `a2t uninstall` | 卸载插件、服务；配置与数据保留 |
 
-**白名单只限制谁能操作，不限制谁能看群消息。** 其他群成员仍能读回复、附件和历史。Pi 扩展有宿主进程权限；这不是工具沙箱，也不新增通用工具授权体系。
+## 数据位置
 
-- 群内禁止直接 `!`/`!!` Shell 入口；**模型仍可按 Pi 原有工具策略正常使用 Bash**。
-- `/login`、`/logout`、认证和密钥输入走 SSH；已识别的凭据弹窗不镜像标题、代码、预填或授权 URL，不抓取原始终端画面。
-- `/share` 上传需要明确确认。Telegram 中不提供 `/quit`、`/exit`（菜单不列出，发送时只回提示，不转给 Pi 或模型）；退出请在 SSH 中用 Pi 自带的 `/quit`。
-- 手机端群里没有 `/` 命令图标，Bot API 也无法在群里添加菜单按钮（`setChatMenuButton` 只用于私聊）。因此“已接入”消息会附带一个命令键盘（不会自动弹出）：点输入框旁的键盘图标即可展开全部菜单命令（`/命令` 按钮，每行 3 个，最多 99 个，顺序同菜单），点按钮即发送该命令，再点图标收起。群里点按钮时客户端会自动引用该消息，插件不会把这条引用发给模型。
-- `/model`、`/thinking` 列表底部有「⭐ 设为默认：关/开」开关：关时点选只对本会话生效；开时点选等同终端里的 `Ctrl+S`，由 Pi 保存为默认并应用到本会话。当前默认项标有“(默认)”。`/ultrafast` 不带参数时会显示其可用参数菜单；带 `on`、`off` 等参数时直接执行。
-- `/restart` 直接重启当前话题对应的在线 Pi（不弹确认）：插件调用 Pi 原本的退出流程（插件平时把 Pi 的退出替换成只提示，原流程只留给 `/restart`），Pi 退出，后台助手等旧进程结束、确认原 tmux 窗格回到 shell 提示符后，输入 `cd <目录> && pi --session <当前会话文件>`。限制：只在 tmux 窗格里可用；`--no-session`、会话还没有消息（尚未写入磁盘）、正在执行任务或有排队消息时直接拒绝（先 `/stop`）；只带 `--session`，原先手动加的其他启动参数不会保留；失败时 Telegram 收不到通知（此时没有在线 Pi），记录在 `~/.pi/agent/tg-runtime/restart.jsonl`，助手不重试。成功的标志是话题里出现“— 会话 xxxx 已接入 —”。已退出或崩溃的 Pi 无法从 Telegram 启动。
-- 凭据识别是已知宿主流程的防御，**不是通用秘密检测器**。不要在普通消息中粘贴秘密；模型、工具或不受信扩展输出的敏感内容仍可能被正常发送。
-- 未知第三方自定义 TUI 不保证自动适配；收到不支持提示后用手机 SSH 接入既有终端处理。
+全部在 `~/.agent2telegram/`（可用环境变量 `AGENT2TELEGRAM_DIR` 改位置）：
 
-## 配置与加载（真实试运行需另行批准）
+```text
+~/.agent2telegram/
+  app/       程序
+  bin/a2t    命令行
+  pi/        Pi 的 Bot 配置 tg.json、运行状态、目录绑定、日志
+  claude/    Claude Code 的 Bot 配置、话题记录、已开启目录、网关 socket
+  bots/      每个 Bot 归属哪个 Agent（同一个 Bot 不会被两个 Agent 同时使用）
+  cache/     Telegram 发来的附件
+  backup/    a2t migrate 的备份
+```
 
-以下是将来试运行的说明，**不是已经执行的部署**。先确认旧消费者的停用范围及回退，再加载；不要直接覆盖现有配置。
+宿主程序只认固定位置的东西都只是指向 `app` 的入口：Pi 的 `<目录>/.pi/extensions/agent2telegram.ts`、Claude Code 的插件登记、`~/.config/systemd/user/agent2telegram-claude.service`、`~/.local/bin/a2t`。
 
-### 1. 项目依赖与临时加载
+## 安全须知
 
-在本仓库目录准备依赖：
+- **白名单只限制谁能操作，不限制谁能看。** 群里其他成员能看到回复和附件，请用只有你和 Bot 的私密群。
+- Token 只存在本机配置文件里（权限 600），不要发到聊天里或提交到仓库。
+- 插件以 Agent 进程的权限运行，不是沙箱。
+
+## 开发
 
 ```bash
-npm ci --ignore-scripts --no-audit --no-fund
+git clone https://github.com/masa168-cmd/Agent2Telegram.git && cd Agent2Telegram
+npm ci
+npm run check:offline        # 全部离线测试 + 类型检查（隔离 HOME，不连网）
+A2T_SOURCE="$PWD" bash install.sh   # 从本地源码安装
 ```
 
-真实试运行获准后，可按 Pi 扩展方式临时加载源码入口：
+设计与阶段计划见 [DESIGN.md](DESIGN.md)。
 
-```bash
-pi -e /absolute/path/pi-telegram-plus-ex/index.ts
-```
+## 来源与许可
 
-不要执行 `pi install npm:pi-telegram-plus-ex`：本候选没有 npm 发布。也不要把本扩展与上游扩展同时加载。
-
-### 2. Bot 注册表
-
-沿用 plus 的 `<agentDir>/tg.json`；默认是 `~/.pi/agent/tg.json`，可用 `PI_CODING_AGENT_DIR` 指定同一用户的现有 agent 目录。论坛模式下，Telegram 话题的 `/tg` 不显示全局 Bot/项目维护入口；请在 **SSH 中的 `/tg` → Bots/Project** 录入、替换和绑定，或在 SSH 编辑器内更新相应记录。`forumChatId` 可通过本地 Bots 的更新字段设置；关闭论坛模式用 `off`。
-
-示例仅展示格式，尖括号必须在 SSH 中替换；不要提交文件或在聊天里发送 Token：
-
-```json
-{
-  "version": 3,
-  "defaultBotId": "personal",
-  "bots": [{
-    "id": "personal",
-    "name": "My Pi",
-    "token": "<only-enter-the-real-token-over-SSH>",
-    "botUsername": "my_pi_bot",
-    "allowedUserId": 123456789,
-    "forumChatId": -1001234567890
-  }]
-}
-```
-
-论坛模式要求已设置有效 `allowedUserId` 和负安全整数 `forumChatId`，不接受最近一次聊天 ID 作为群配置，也不在群里进行首次凭据/操作者配对。已有未配对 Bot 可先按上游私聊配对流程完成，再在 SSH 配置固定论坛群。无效论坛配置会关闭控制，不退回私聊兜底。
-
-项目 `<cwd>/.pi/telegram.json` 引用 Bot：
-
-```json
-{ "botId": "personal", "enabled": true, "tool": "brief", "thinking": "brief", "retryCount": 3 }
-```
-
-Bot 身份/群/操作者保存在注册表；项目偏好与游标保存在项目绑定，**不得提交这些运行时文件**。没有 `forumChatId` 时保留原 plus 私聊路径，而不是论坛模式。
-
-### 3. 故障恢复
-
-- SSH 中 `/tg-forum`：查看当前话题链接或错误。
-- 创建结果未知：先在 Telegram 检查是否已建成话题，再在 SSH 用 `/tg-forum retry` 并确认。已删除的话题会自动新建一次，无需 retry。可能留下孤立话题；插件不删历史。已有有效话题不能用 retry 强制替换。
-- “本机转发结果未确认”：先查该话题和 Pi 状态，**不要自动重发**。IPC ACK 仅表示已接纳，不表示模型任务已完成。
-- “更新游标无法保存，本条指令未执行”：先用 SSH 检查目录权限与日志，再明确重新提交。游标先保存、指令后交接，崩溃仍可能出现已消费但未执行；不承诺持久化 exactly-once 或必达。
-- 离线话题不会唤醒 Pi；手机 SSH 启动/恢复对应 Pi 后才重新上线。
-
-## 上下文预算（Pi 1.4.0）
-
-获准装载本版本后，SSH 使用 `/context-budget`，Telegram 使用 `/context_budget`，或从 `/tg` → Commands 进入同一菜单。`/context-budget status`（手机 `/context_budget status`）只显示当前模型的加载前、已保存及实际窗口/预留量/触发阈值/自动压缩开关，不调用模型。
-
-- 每次打开菜单只列 **Pi 当前识别为已授权/登录可用的聊天模型**，使用扩展侧同步 `modelRegistry.getAvailable()` 快照，不读取凭据、不主动刷新 Token 或请求服务商目录。当前模型仅在该列表中时优先显示；可配置多个提供者/模型，选择配置对象不会切换运行模型。缓存认证状态不保证 Token 未过期、服务端模型权限或上下文容量。
-- 模型长列表使用官方 `SelectList` 嵌入底部输入区，最多 14 行并有界滚动，上下键移动时选中项保持可见，终端缩放保留选择；不覆盖聊天正文。SSH 与 Telegram 操作同一个组件，手机使用既有分页；动作选择、输入和确认继续使用标准接口。
-- 未在可用列表中的已保存规则不会自动删除或混入模型候选；从“管理未列出的已保存规则”单独查看/确认删除，不能在此编辑。没有可用模型时仍可管理旧规则。Pi 使用哪一个模型，就按其已有规则检查压缩；未配置模型沿用宿主设置。`status` 查询不依赖选择列表过滤。
-- 只读写精确 `<cwd>/.pi/context-budget.json`，不向祖先搜索、不改 agent 全局配置、不另建 agent 目录。无配置时不做预算覆盖。目录须有当前 Pi 项目信任。
-- 菜单展示旧→新值与余量，确认后仅在 Pi 空闲且没有排队消息时应用，并重新核对所选模型仍在可用快照中；取消不修改。数值只接受完整十进制安全整数，须 `0 < 阈值 < 窗口`，窗口须大于模型输出上限。自动压缩开关、keepRecentTokens、输出上限、认证均不修改。
-
-唯一持久数据示例（模型名仅为示意，真实模型从菜单选）：
-
-```json
-{
-  "version": 1,
-  "models": {
-    "example/model-a": { "contextWindow": 1050000, "compactAtTokens": 800000 },
-    "example/model-b": { "contextWindow": 262144, "compactAtTokens": 200000 }
-  }
-}
-```
-
-不存派生 `reserveTokens`：模型 A 的预留量为 `1050000 - 800000 = 250000`。Pi 的正常规则是 **tokens 严格大于阈值才触发**；不做硬截断，也不取消原生溢出恢复。调整本地窗口不增加服务端或订阅容量，更长上下文可能增加用量和延迟；本命令不主动压缩或发模型请求。
-
-### 生效、恢复与边界
-
-- 确认保存时，完整 Provider 包装只修改已配置聊天模型的窗口，保留其他模型/认证/操作；再回读实际值。数据使用 0600 原子写入与并发版本检查；锁冲突、过期会话/论坛操作或应用失败拒绝保存，不自动重试。遇到遗留 `.lock` 须通过 SSH 核实后处理，插件不猜测删除。
-- 同 cwd 会话共享磁盘规则，但本次提交只即时应用于命令所指的在线会话；**其他在线实例需各自重载**，不自动广播。不存在的模型等无效规则会拒绝整组应用，不静默忽略错误。
-- “恢复默认”保存删除规则，**当前运行值暂时保留**；待原生 `/reload` 或正常重启后恢复宿主设置。插件不会自动重载，也不会删除任何原生 settings 文件。完全关闭本扩展时撤回自身窗口包装与压缩读取适配；不撤别人的提供者/方法覆盖。
-- 不能与旧 `long-context` 等同提供者覆盖叠用。旧窗口扩展及其配套原生 reserve 必须按获准方案成对迁移，且只清理已核对属于旧实现的字段/文件；不提供盲删或自动迁移。新功能通过约定验收前保留旧实现。
-
-### 为什么需要兼容适配
-
-Pi 1.4.0 的 `SettingsManager.applyOverrides()` 会在保存主题、模型等普通设置时丢失。此功能改为 **只在当前捕获会话的 SettingsManager 实例上包装公开的 `getCompactionReserveTokens(model)`**：原生压缩读取会经过它，每次按模型返回派生余量。未配置模型和原生设置校验仍交给原方法；不改类原型、Pi 安装代码、私有字段或原生 settings 快照/文件。退出时撤回本实例包装，保留原生设置在此期间的更新。
-
-**这不是 Pi 官方扩展覆盖钩子，而是固定 1.4.0 的版本相关适配。** 通用 `pi.getSettings()` 仍显示原生快照，不能据它判断插件阈值；以 `/context-budget status` 的实际读取为准。其它实例覆盖、无效桥接或不支持的宿主会拒绝应用；升级 Pi 前须重新核对调用链。此功能不支持 OMP。
-
-本地设置不要求 Bot 在线，但需要现有会话/TUI 兼容桥接已经加载。首次给一个未预载桥接的 Pi 执行 `/reload` 不保证能捕获会话；实际加载方案可能需要正常重启，应单独确认。手机侧沿用配对用户、正确话题和在线会话授权，不新增 Bot 消费者或进程。
-
-## 离线验证
-
-在完整源码工作区安装依赖后运行（运行包不包含开发测试/脚本）：
-
-```bash
-npm run check:offline
-```
-
-该命令清空继承的凭据环境，隔离 HOME、agent 目录和 TMPDIR 到 `.test-work/`，预加载外网拦截器，仅允许本机 IPC，然后执行全套单测、类型与 changelog 检查。不会装载现有 Pi、启动真实 Pi/模型、修改 tmux 或调用真实 Telegram。不是操作系统级安全沙箱；测试脚本与依赖仍必须可信。
-
-新增测试包括实际扩展入口配模拟宿主/Telegram、公开 SessionManager 的虚构会话落盘、两个独立 Node 测试进程的路由/控制/文件/回调/收件重选，以及正文流式与代次隔离。详见 [兼容性与验收边界](docs/compatibility.md)。
-
-上游保留的 `test:e2e*` 脚本可能启动 Pi、tmux、OMP 或使用真实服务，**不在本轮离线批准范围内，不要当作安全默认命令运行**。上游 npm 发布 workflow 不纳入源码同步，原工作区留存版本已禁用；本仓库不提供自动发布流程。源码同步、npm 发布和真实上线分别记录，发布与上线须另行批准。
-
-## 回退与来源
-
-真实装载前记录当前 Pi 版本、扩展加载配置、Bot 消费者及指定测试群。回退时停用**本次获准装载的扩展**、恢复原配置/固定版本，不强杀其他任务；保留会话 JSONL、自定义 entries、论坛话题和附件，不自动清理历史。**代码回退不会撤回已发到 Telegram 的信息。** 本轮未上线，因此没有执行线上回退。
-
-- 来源、MIT 声明与保留的上游作者见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。mux 仅作为架构参考，没有双装它的输出 RPC。
-- [CHANGELOG.md](CHANGELOG.md) 保留上游历史；历史版本声明不等于本 fork 已验收。
-- [日志说明](docs/logging.md) 保留上游日志路径和环境变量；这些兼容标识有意未批量重命名。日志可能含工作内容，不上传到仓库或公开聊天。
-- 其他保留的设计文档、E2E 脚本属于上游材料；本 README 和兼容性文档优先。
+MIT。Pi 部分以 [pi-telegram-plus](https://github.com/jalyfeng/pi-telegram-plus)（jalyfeng）为基础，参考了 [pi-telegram-mux](https://github.com/hkfires/pi-telegram-mux) 的设计；详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

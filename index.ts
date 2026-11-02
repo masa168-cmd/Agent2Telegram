@@ -404,7 +404,9 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
   const onForumChange = (): void => {
     refreshStatus();
     const forumLease = forum.lease();
-    if (!forumLease || announcedForumLease === forumLease) return;
+    // Disconnected (a2t disable, gateway down): announce again once it is back.
+    if (!forumLease) { announcedForumLease = undefined; return; }
+    if (announcedForumLease === forumLease) return;
     announcedForumLease = forumLease;
     const target = forum.getTarget()!;
     const token = config.botToken;

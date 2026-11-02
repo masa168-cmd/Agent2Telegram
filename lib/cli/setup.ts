@@ -32,7 +32,6 @@ export async function runSetup(agent: SetupAgent, dataDir: string): Promise<numb
     if (registry.bots.length > 0) {
       const replace = await ask(`已有 Bot：${registry.bots.map(b => b.name).join(", ")}。替换为新的 Bot？(y/N) `);
       if (replace.toLowerCase() !== "y") { console.log("未修改。"); return 0; }
-      for (const bot of registry.bots) await removeBot(bot.id);
     }
     const name = (await ask(`Bot 名称（默认 ${agent}）：`)) || agent;
     const token = await ask("Bot Token（输入时不显示）：", true);
@@ -46,6 +45,8 @@ export async function runSetup(agent: SetupAgent, dataDir: string): Promise<numb
     const botUsername = await getTelegramBotUsername(token).catch(() => undefined);
     if (!botUsername) { console.log("无法用这个 Token 连接 Telegram，请检查 Token 和网络。"); return 1; }
     const bot: BotRecord = { id: randomUUID(), name, token, forumChatId, botUsername, allowedUserId };
+    // Replace the old Bot only now that everything checked out: a typo above keeps it.
+    for (const old of registry.bots) await removeBot(old.id);
     await addBot(bot);
     await setDefaultBot(bot.id);
     console.log(`已保存 @${botUsername}。请确认 Bot 已是论坛群管理员，并有「管理话题」权限。`);

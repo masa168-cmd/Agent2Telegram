@@ -222,6 +222,14 @@ describe("real extension entry wired to fake Pi and Telegram (offline)", () => {
     await new Promise(resolve => setTimeout(resolve, 50));
     expect(f.calls.some(c => c.method === "sendMessage" && String(c.body.text).includes("while offline"))).toBe(false);
   });
+  it("announces itself again when it comes back after a2t disable / enable", async () => {
+    const f = await setup();
+    const notices = () => f.calls.filter(c => c.method === "sendMessage" && String(c.body.text).includes("本话题对应此目录")).length;
+    expect(notices()).toBe(1);
+    f.gateway().deps.onState({ kind: "waiting", reason: "此目录未开启 Telegram" });
+    f.gateway().deps.onState({ kind: "connected", threadId: 11 });
+    await vi.waitFor(() => expect(notices()).toBe(2), { timeout: 4000 });
+  });
   it("says goodbye to the gateway when the session shuts down", async () => {
     const f = await setup();
     await f.shutdown();

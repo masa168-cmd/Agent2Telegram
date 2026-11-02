@@ -183,7 +183,7 @@ async function open($: EngineInterface, cwd: string): Promise<boolean> {
 async function serve($: EngineInterface, cwd: string, mine: number) {
   while (!closing && mine === generation) {
     if (!connected && !(await open($, cwd))) {
-      await later($, 30_000)
+      await later($, 5_000)
       continue
     }
     const reply = await call($, '/poll') as { events?: GatewayEvent[]; unknown?: true } | undefined

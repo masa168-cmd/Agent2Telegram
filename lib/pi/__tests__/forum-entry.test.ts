@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { mkdtemp, mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -112,7 +113,7 @@ async function setup(options: { unpaired?: boolean } = {}) {
   await vi.waitFor(() => expect(mock.gateway?.open).toBeDefined());
   const connect = async (threadId = 11) => {
     mock.gateway!.deps.onState({ kind: "connected", threadId });
-    await vi.waitFor(() => expect(calls.some(c => c.method === "sendMessage" && c.body.text.includes("本话题对应此目录"))).toBe(true), { timeout: 4000 });
+    await vi.waitFor(() => expect(calls.some(c => c.method === "sendMessage" && c.body.text.includes("本话题对应目录"))).toBe(true), { timeout: 4000 });
   };
   if (!options.unpaired) await connect();
   return { root, cwd, uploads, token, bot, sessionManager, settingsManager, session, commands, hostUi, calls, prompts, emit, fetchMock,
@@ -224,8 +225,11 @@ describe("real extension entry wired to fake Pi and Telegram (offline)", () => {
   });
   it("announces itself again when it comes back after a2t disable / enable", async () => {
     const f = await setup();
-    const notices = () => f.calls.filter(c => c.method === "sendMessage" && String(c.body.text).includes("本话题对应此目录")).length;
+    const notices = () => f.calls.filter(c => c.method === "sendMessage" && String(c.body.text).includes("本话题对应目录")).length;
     expect(notices()).toBe(1);
+    // The notice names the directory (outside home: the absolute path).
+    const notice = f.calls.find(c => c.method === "sendMessage" && String(c.body.text).includes("本话题对应目录"));
+    expect(String(notice?.body.text)).toContain(`<code>${realpathSync(f.cwd)}</code>`);
     f.gateway().deps.onState({ kind: "waiting", reason: "此目录未开启 Telegram" });
     f.gateway().deps.onState({ kind: "connected", threadId: 11 });
     await vi.waitFor(() => expect(notices()).toBe(2), { timeout: 4000 });

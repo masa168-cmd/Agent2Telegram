@@ -37,7 +37,7 @@ export type GatewayClientDeps = {
 
 const POLL_TIMEOUT_MS = 30_000;
 const RETRY_DOWN_MS = 3_000;
-const RETRY_REFUSED_MS = 30_000;
+const RETRY_REFUSED_MS = 5_000;
 /** Registered but no topic yet (no user ID, or the topic could not be made): check again soon. */
 const RETRY_UNPAIRED_MS = 5_000;
 

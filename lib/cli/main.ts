@@ -104,11 +104,11 @@ export async function main(argv: string[]): Promise<number> {
       const dir = resolve(rest[1] ?? process.cwd());
       if (agent === "pi") {
         const done = enablePi(dir, appDir());
-        console.log(done.result === "unchanged" ? `Pi 已在 ${dir} 开启。` : `已在 ${dir} 开启 Pi（${done.path}）。新启动的 pi 会加载它；关闭前就在运行的 pi 约 30 秒内自动接回。`);
+        console.log(done.result === "unchanged" ? `Pi 已在 ${dir} 开启。` : `已在 ${dir} 开启 Pi（${done.path}）。新启动的 pi 会加载它；关闭前就在运行的 pi 约 5 秒内自动接回。`);
         for (const legacy of done.removedLegacy) console.log(`已移除旧入口 ${legacy}`);
       } else {
         console.log(enableClaudeProject(agentDataDir("claude"), dir)
-          ? `已在 ${dir} 开启 Claude Code；该目录的会话约 30 秒内自动接入。` : `Claude Code 已在 ${dir} 开启。`);
+          ? `已在 ${dir} 开启 Claude Code；该目录的会话约 5 秒内自动接入。` : `Claude Code 已在 ${dir} 开启。`);
       }
       return 0;
     }

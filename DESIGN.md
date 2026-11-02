@@ -162,7 +162,7 @@ interface AgentAdapter {
 7. 界面中英文混用。
 8. 遗留：`scripts/e2e/run-e2e-commands.mjs` 已改为检查 Telegram 拒绝 `/quit`、`/exit`（该脚本需真实 Pi，未运行）。`forum-multiprocess.test.ts` 随 4b 删除多实例选主一并删除。
 9. 4b 收尾（11-02）：会话接入时网关先「重开」记录的话题——已关闭的重开，已删除的新建一次，其他错误（如网络）沿用原话题、不阻止接入；Pi 与 Claude 共用。一个 Agent 只能有一个 Bot：`addBot` 已有 Bot 时拒绝，Pi 的 `/tg → Bots` 只在没有 Bot 时显示「添加」，删除「默认 Bot」选择与清除、目录绑定到其他 Bot 的流程；目录绑定里旧的 `botId` 被忽略，Pi 与网关用同一规则选 Bot（默认，否则第一个）。
-10. 4c（11-02）：Bot、用户 ID 只由 `a2t setup` 管，目录接入只由 `a2t enable/disable` 管。Pi 的 `/tg` 删除 Bots、Project 两项及相关流程，只保留 Commands、Config、Online sessions、Debug info；目录绑定里旧的 `enabled:false` 被忽略。`a2t disable` 后网关在取消息或每 10 秒检查时断开该目录的会话并在话题提示，`a2t enable` 后会话约 30 秒内自动重新登记（Pi 按目录及上级目录是否有入口判断，Claude 按已开启列表）。
+10. 4c（11-02）：Bot、用户 ID 只由 `a2t setup` 管，目录接入只由 `a2t enable/disable` 管。Pi 的 `/tg` 删除 Bots、Project 两项及相关流程，只保留 Commands、Config、Online sessions、Debug info；目录绑定里旧的 `enabled:false` 被忽略。`a2t disable` 后网关在取消息或每 10 秒检查时断开该目录的会话并在话题提示，`a2t enable` 后会话约 5 秒内自动重新登记（被拒绝的会话每 5 秒重试）（Pi 按目录及上级目录是否有入口判断，Claude 按已开启列表）。
 
 ## 7. 分阶段计划（每阶段单独确认）
 

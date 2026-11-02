@@ -18,7 +18,7 @@ import { formatTelegramStatusLine, clearTelegramStatus, TELEGRAM_STATUS_KEY } fr
 import { installTelegramStatusAlignment } from "./lib/pi/status-footer.ts";
 import { ForumSession } from "./lib/pi/forum-session.ts";
 import { createForumTelegramTransport } from "./lib/pi/forum-transport.ts";
-import { forumTopicLink, sameForumTarget } from "./lib/core/forum-binding.ts";
+import { canonicalCwd, forumTopicLink, forumTopicName, sameForumTarget } from "./lib/core/forum-binding.ts";
 import { deliverPendingNotices } from "./lib/core/pending-notices.ts";
 import { initLogger, log, type LogLevel } from "./lib/core/logger.ts";
 import { getCurrentTelegramTurn } from "./lib/core/turn-context.ts";
@@ -409,6 +409,9 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
     if (announcedForumLease === forumLease) return;
     announcedForumLease = forumLease;
     const target = forum.getTarget()!;
+    // Same path as the topic name, shown as ~/… inside home.
+    const topicName = forumTopicName(canonicalCwd(sessionContext?.cwd ?? process.cwd()));
+    const dirLabel = topicName.startsWith("/") || topicName === "~" ? topicName : `~/${topicName}`;
     const token = config.botToken;
     const apiBase = config.apiBase;
     // The keyboard lists the synced menu, so wait for the host catalog and the menu sync.
@@ -418,7 +421,7 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
       if (disposed || config.botToken !== token || forum.lease() !== forumLease) return;
       const keyboard = getTelegramCommandKeyboard(token, apiBase);
       await transport.sendText(target.chatId,
-        `<b>— 会话 ${escapeHtml(target.sessionId.slice(0, 8))} 已接入 —</b>\n本话题对应此目录；/new、恢复会话后仍在本话题，以上为之前会话的内容。`, target.threadId,
+        `<b>— 会话 ${escapeHtml(target.sessionId.slice(0, 8))} 已接入 —</b>\n本话题对应目录 <code>${escapeHtml(dirLabel)}</code>；/new、恢复会话后仍在本话题，以上为之前会话的内容。`, target.threadId,
         undefined, undefined, keyboard.length > 0 ? { replyKeyboard: keyboard } : undefined);
       // Notices a superseded runtime queued (/new and /reload results).
       deliverPendingNotices(transport);

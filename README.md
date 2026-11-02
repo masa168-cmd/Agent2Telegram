@@ -52,10 +52,10 @@ curl -fsSL https://raw.githubusercontent.com/masa168-cmd/Agent2Telegram/main/ins
 ```bash
 cd ~/my-project
 a2t enable pi       # 之后在该目录启动的 pi 会接入
-a2t enable claude   # 该目录的 Claude Code 会话约 30 秒内自动接入
+a2t enable claude   # 该目录的 Claude Code 会话约 5 秒内自动接入
 ```
 
-`a2t disable pi|claude [目录]` 关闭：正在运行的会话约 10 秒内断开，话题里会提示；再 `a2t enable` 后约 30 秒内自动接回，不用重启。群里会为每个目录自动建一个话题，话题名是目录名；同一目录同时只接一个会话。
+`a2t disable pi|claude [目录]` 关闭：正在运行的会话约 10 秒内断开，话题里会提示；再 `a2t enable` 后约 5 秒内自动接回，不用重启。群里会为每个目录自动建一个话题，话题名是目录名；同一目录同时只接一个会话。
 
 ## 在 Telegram 里使用
 

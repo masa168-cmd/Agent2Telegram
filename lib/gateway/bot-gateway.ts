@@ -38,14 +38,16 @@ export type OpenRequest = {
 /** `quiet`: the directory is simply not enabled; the session stays idle without a notice. */
 export type OpenResult = { ok: true; threadId?: number; notices: string[] } | { ok: false; reason: string; quiet?: true };
 
-/** Commands shown in the group's "/" menu. */
-export const MENU_COMMANDS = [
+export type MenuCommand = { command: string; description: string };
+
+/** Commands shown in the group's "/" menu (Claude Code). */
+export const MENU_COMMANDS: readonly MenuCommand[] = [
   { command: "stop", description: "中断当前回合" },
   { command: "compact", description: "压缩上下文" },
   { command: "clear", description: "清空对话" },
   { command: "usage", description: "查看用量" },
   { command: "restart", description: "重启 Claude Code（仅 tmux）" },
-] as const;
+];
 
 export type GatewayDeps = {
   dataDir: string;
@@ -67,6 +69,8 @@ export type GatewayDeps = {
   /** The old process's argv, so its flags survive a restart. */
   readArgv?: (pid: number) => string[] | undefined;
   isPidAlive?: (pid: number) => boolean;
+  /** Thin mode: the "/" menu, and the only commands accepted (default MENU_COMMANDS). */
+  commands?: readonly MenuCommand[];
   /** Only enabled directories get a topic (`a2t enable claude`); all when left out. */
   isEnabled?: (cwd: string) => boolean;
   now?: () => number;
@@ -105,11 +109,10 @@ type Pending = {
 const TYPING_INTERVAL_MS = 4_500;
 /** A session that has not polled for this long is gone (it polls every ≤ 20 s). */
 export const SESSION_STALE_MS = 60_000;
-const UNSUPPORTED_COMMAND_TEXT = "暂不支持这个命令。可用：/stop /compact /clear /usage /restart";
 const RESTART_NEEDS_TMUX_TEXT = "只有在 tmux 里运行 ctg 时才能用 /restart。Claude Code 没有退出。";
 const PRIVATE_CHAT_TEXT = "请在论坛群里对应目录的话题中和我对话。";
-const NOT_ENABLED_TEXT = "此目录未开启 Telegram（在该目录运行 a2t enable pi 或 a2t enable claude）。";
-const NO_USER_TEXT = "还没有设置你的 Telegram 用户 ID：在终端运行 a2t setup（pi 或 claude），然后 a2t gateway restart。";
+const NOT_ENABLED_TEXT = "此目录未开启 Telegram（在该目录运行 a2t enable pi、claude 或 codex）。";
+const NO_USER_TEXT = "还没有设置你的 Telegram 用户 ID：在终端运行 a2t setup（pi、claude 或 codex），然后 a2t gateway restart。";
 
 /** Same key as the Pi adapter: `telegram:<bot id>`, else a token hash. */
 export const botKey = forumBotId;
@@ -137,6 +140,7 @@ export class BotGateway {
   private now(): number { return this.deps.now?.() ?? Date.now(); }
   private get rich(): boolean { return this.deps.mode === "rich"; }
   private get label(): string { return this.deps.agentLabel ?? "Claude Code"; }
+  private get commands(): readonly MenuCommand[] { return this.deps.commands ?? MENU_COMMANDS; }
   private alive(pid: number): boolean { return (this.deps.isPidAlive ?? defaultPidAlive)(pid); }
 
   // ── Topics: one per launch directory, kept across restarts ──────────────
@@ -377,14 +381,15 @@ export class BotGateway {
       }
     }
     const command = text.match(/^\/([A-Za-z0-9_]+)(?:@\w+)?(?:\s|$)/)?.[1];
-    if (command === "stop") this.push(session, { type: "abort" });
+    if (command !== undefined && !this.commands.some(c => c.command === command)) {
+      await this.deps.transport.sendText(chatId, `暂不支持这个命令。可用：${this.commands.map(c => `/${c.command}`).join(" ")}`, threadId);
+    } else if (command === "stop") this.push(session, { type: "abort" });
     else if (command === "compact" || command === "clear") this.push(session, { type: "command", name: command });
     else if (command === "usage") this.push(session, { type: "usage" });
     else if (command === "restart") {
       if (session.pane && session.pid !== undefined) this.push(session, { type: "restart" });
       else await this.deps.transport.sendText(chatId, RESTART_NEEDS_TMUX_TEXT, threadId);
-    } else if (command !== undefined) await this.deps.transport.sendText(chatId, UNSUPPORTED_COMMAND_TEXT, threadId);
-    else this.push(session, { type: "prompt", text });
+    } else this.push(session, { type: "prompt", text });
   }
 
   /**
@@ -421,7 +426,7 @@ export class BotGateway {
   async registerCommands(): Promise<void> {
     const config = this.deps.getConfig();
     if (config.forumChatId === undefined) return;
-    await this.deps.api("setMyCommands", { commands: MENU_COMMANDS, scope: { type: "chat", chat_id: config.forumChatId } });
+    await this.deps.api("setMyCommands", { commands: this.commands, scope: { type: "chat", chat_id: config.forumChatId } });
   }
 
   // ── Sessions → Telegram ─────────────────────────────────────────────────

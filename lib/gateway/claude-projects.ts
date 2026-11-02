@@ -1,5 +1,5 @@
-// Directories where Claude Code sessions connect to Telegram (`a2t enable claude`).
-// The plugin is installed for every directory; only these get a forum topic.
+// Directories where Claude Code or Codex sessions connect to Telegram
+// (`a2t enable claude|codex`; one projects.json per agent data dir). Only these get a forum topic.
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 

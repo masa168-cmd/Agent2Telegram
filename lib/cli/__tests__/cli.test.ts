@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { disableClaudeProject, enableClaudeProject, isClaudeProjectEnabled } from "../../gateway/claude-projects.ts";
 import { getProjectBindingPath } from "../../core/config.ts";
-import { appDir } from "../main.ts";
+import { appDir, main } from "../main.ts";
 import { planMigration, runMigrate } from "../migrate.ts";
 import { disablePi, enablePi, isPiEnabled, piEntryPath } from "../pi-entry.ts";
 import { gatewayUnit, installGatewayService, serviceDir } from "../service.ts";
@@ -46,6 +46,15 @@ describe("a2t enable / disable", () => {
     expect(isClaudeProjectEnabled(data, join(root, "other"))).toBe(false);
     expect(disableClaudeProject(data, join(root, "proj"))).toBe(true);
     expect(isClaudeProjectEnabled(data, join(root, "proj"))).toBe(false);
+  });
+
+  it("keeps Codex directories apart from Claude's", async () => {
+    const dir = join(root, "proj");
+    expect(await main(["enable", "codex", dir])).toBe(0);
+    expect(isClaudeProjectEnabled(join(root, "a2t", "codex"), join(dir, "sub"))).toBe(true);
+    expect(isClaudeProjectEnabled(join(root, "a2t", "claude"), dir)).toBe(false);
+    expect(await main(["disable", "codex", dir])).toBe(0);
+    expect(isClaudeProjectEnabled(join(root, "a2t", "codex"), dir)).toBe(false);
   });
 });
 

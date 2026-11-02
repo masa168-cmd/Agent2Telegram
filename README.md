@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | [Pi coding agent](https://pi.dev) 1.4.0 | 可用 | Pi 扩展 + 常驻网关 |
 | [Claude Code](https://code.claude.com) 2.1.316+ | 可用 | Claude Code 插件（mod）+ 常驻网关 |
-| Codex | 计划中 | — |
+| [Codex](https://github.com/openai/codex) CLI 0.166+ | 可用 | 网关直连 Codex 的共享 app-server（不装插件） |
 
 ## 安装
 
@@ -18,11 +18,12 @@
 curl -fsSL https://raw.githubusercontent.com/masa168-cmd/Agent2Telegram/main/install.sh | bash
 ```
 
-安装脚本会询问接入哪些 Agent（也可加参数：`… | bash -s -- --pi --claude`），然后：
+安装脚本会询问接入哪些 Agent（也可加参数：`… | bash -s -- --pi --claude --codex`），然后：
 
 - 把程序装到 `~/.agent2telegram/app`，在本机安装依赖并编译；
 - 建立命令 `a2t`（`~/.local/bin/a2t`）；
 - Claude Code：把插件装成本地插件（直接从 `~/.agent2telegram/app` 读取）；
+- Codex：不往 Codex 里装任何东西；
 - 安装用户级 systemd 服务 `agent2telegram-gateway`：一个常驻网关，替所有 Agent 的 Bot 收消息，再按话题分给对应会话（旧版本的 `agent2telegram-claude` 服务会被替换）。
 
 **脚本不会询问或保存 Bot Token。** 重复运行同一条命令即是升级，配置和数据不受影响。
@@ -36,7 +37,8 @@ curl -fsSL https://raw.githubusercontent.com/masa168-cmd/Agent2Telegram/main/ins
 
    ```bash
    a2t setup pi        # 或
-   a2t setup claude
+   a2t setup claude    # 或
+   a2t setup codex
    ```
 
    需要填：Bot Token、论坛群 ID（以 `-100` 开头：复制群里任意消息的链接 `t.me/c/<数字>/…`，在 `<数字>` 前加 `-100`）、你的 Telegram 用户 ID（必填，私聊 [@userinfobot](https://t.me/userinfobot) 可查到；只有这个账号能操作 Agent）。
@@ -53,9 +55,10 @@ curl -fsSL https://raw.githubusercontent.com/masa168-cmd/Agent2Telegram/main/ins
 cd ~/my-project
 a2t enable pi       # 之后在该目录启动的 pi 会接入
 a2t enable claude   # 该目录的 Claude Code 会话约 5 秒内自动接入
+a2t enable codex    # 该目录在终端里运行的 Codex 会话约 5 秒内自动接入
 ```
 
-`a2t disable pi|claude [目录]` 关闭：正在运行的会话约 10 秒内断开，话题里会提示；再 `a2t enable` 后约 5 秒内自动接回，不用重启。群里会为每个目录自动建一个话题，话题名是目录名；同一目录同时只接一个会话。
+`a2t disable pi|claude|codex [目录]` 关闭：正在运行的会话约 10 秒内断开，话题里会提示；再 `a2t enable` 后约 5 秒内自动接回，不用重启。群里会为每个目录自动建一个话题，话题名是目录名；同一目录同时只接一个会话。
 
 ## 在 Telegram 里使用
 
@@ -75,6 +78,18 @@ a2t enable claude   # 该目录的 Claude Code 会话约 5 秒内自动接入
 - **选择题**：按选项出按钮，另有「✏️ 自定义输入」（下一条文字即答案）和「💬 先聊聊」；多个问题逐题提问。
 - 终端里来自 Telegram 的消息会标注 “Prompt from the agent2telegram plugin”，Claude 读到的是你的原话。
 
+**Codex**：在 tmux / SSH 终端里运行 `codex`（终端版会连本机共享的 Codex 后台服务，网关从那里接入同一会话）。话题里发的任务和回复，终端里同步显示；终端里直接对话的回合，最终回复也发到话题。Codex 正在工作时再发文字，会插入当前回合（和在终端里边跑边打字一样）。接入时话题里会提示「Codex 会话已接入」及对应目录。`/` 菜单：
+
+| 命令 | 作用 |
+| --- | --- |
+| `/stop` | 中断当前回合 |
+| `/compact` | 压缩上下文 |
+| `/usage` | 用量额度（API key 登录时没有额度窗口） |
+
+- Codex 的协议审批（命令执行确认）由终端处理，Telegram 不显示审批按钮；在对话里用文字确认的流程（例如 AGENTS.md 要求先出计划再执行）直接在话题里回复即可。
+- 一个刚启动、还没对话过的 Codex 会话，第一轮只在结束后发回最终回复；从第二轮起正常显示「正在输入…」。
+- VS Code 里的 Codex 会话不在支持范围内。
+
 **Pi** 的命令、菜单与话题规则见 [docs/pi.md](docs/pi.md)。
 
 ## a2t 命令
@@ -82,9 +97,9 @@ a2t enable claude   # 该目录的 Claude Code 会话约 5 秒内自动接入
 | 命令 | 作用 |
 | --- | --- |
 | `a2t status` | 查看安装、网关、已开启的目录 |
-| `a2t setup <pi\|claude>` | 配置 Bot |
-| `a2t enable / disable <pi\|claude> [目录]` | 按目录开启 / 关闭 |
-| `a2t gateway <restart\|status\|logs>` | 网关服务（Pi 与 Claude Code 共用） |
+| `a2t setup <pi\|claude\|codex>` | 配置 Bot |
+| `a2t enable / disable <pi\|claude\|codex> [目录]` | 按目录开启 / 关闭 |
+| `a2t gateway <restart\|status\|logs>` | 网关服务（所有 Agent 共用） |
 | `a2t migrate [--apply]` | 迁移旧版本数据（默认只列清单；执行前自动备份） |
 | `a2t uninstall` | 卸载插件、服务；配置与数据保留 |
 
@@ -98,6 +113,7 @@ a2t enable claude   # 该目录的 Claude Code 会话约 5 秒内自动接入
   bin/a2t    命令行
   pi/        Pi 的 Bot 配置 tg.json、话题记录、目录绑定、日志、网关 socket
   claude/    Claude Code 的 Bot 配置、话题记录、已开启目录、网关 socket
+  codex/     Codex 的 Bot 配置、话题记录、已开启目录、网关 socket
   bots/      每个 Bot 归属哪个 Agent（同一个 Bot 不会被两个 Agent 同时使用）
   cache/     Telegram 发来的附件
   backup/    a2t migrate 的备份

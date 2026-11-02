@@ -28,9 +28,25 @@
 | 会话列表与目录 | `thread/loaded/list`、`thread/list`；Thread 对象带 `cwd`、`status`、`source` | `Thread.ts`、`ThreadLoadedListResponse.ts` |
 | 其他控制 | `thread/compact/start`、`model/list`、`thread/name/set`、`thread/fork`、`thread/goal/*` | `ClientRequest.ts` |
 
+11-02 只读调查补充（codex-cli 0.166.0）：
+
+- 共享 app-server 的控制 socket 在 `~/.codex/app-server-control/app-server-control.sock`（指向 `/tmp/codex-daemon-1000/…`），**协议是 Unix socket 上的 WebSocket**（HTTP Upgrade 后每条 JSON-RPC 一帧），不是逐行 JSON；`codex app-server proxy` 只转发字节。实测：`initialize`（`clientInfo`、`capabilities.experimentalApi`）→ `initialized` 通知 → `thread/loaded/list`、`thread/list`、`thread/read`（`includeTurns:false`）均可用；连接后会收到 `remoteControl/status/changed`、`account/updated`。
+- 调查时没有已加载的会话（`thread/loaded/list` 为空）。最近 5 个会话都是 `source: vscode`（目录 `~/codex-main`、`~/CPA`）：`thread/list` 读的是磁盘上的记录，不说明 VS Code 插件的活会话是否跑在共享 app-server 里（VS Code 插件可能自带 stdio app-server）。**能否看到并加入 VS Code / 终端里正在运行的会话，需要真机确认。**
+- 审批：官方 README 说审批只发给「有能力的客户端」，无人能答时命令被拒；断线重连会重放待答审批。是否同时发给终端与网关（先答先得）仍需真机确认。
+- 斜杠命令可映射的 RPC：`turn/interrupt`（/stop）、`thread/compact/start`（/compact）、`model/list` 与 `thread/resume` 的 `model` 覆盖（/model）、`account/rateLimits/read`（用量）、`turn/steer`（插话）。
+- 本机早期自制插件 `codex-telegram-bridge`（用第三个 Bot、自起 stdio app-server）已于 11-02 经用户批准停止并删除；`~/.codex/config.toml` 只删其两段配置（备份在 `~/.agent2telegram/backup/`）。
+
+11-02 真机确认（用户在 tmux 里于 `~/main-codex` 运行 `codex`）：
+
+- 终端会话跑在共享 app-server 里：`thread/loaded/list` 能看到，`thread/read` 给出正确 `cwd`（`source` 显示为 `vscode`，不能用来区分终端与 VS Code）。
+- 外部连接 `turn/start` 发「只回复 OK」：Codex 约 3 秒回复 `OK`，**终端同步显示了这条输入和回复**；`turn/interrupt` 有效（turn 状态 `interrupted`），终端也显示。
+- **新会话还没对话过时 `thread/resume` 报 `no rollout found`**（尚未落盘），收不到事件；但 `turn/start` 照样成功，回合结束后用 `thread/read`（`includeTurns:true`）可取到最终回复。落盘后 `thread/resume` 成功，能收到 `turn/started`、`item/*`、`turn/completed`。
+- 未订阅时也能收到 `thread/status/changed`、`thread/started`、`thread/closed`；Codex 起名字时会临时加载一个同目录的辅助 thread（约 60 秒后 `thread/closed`），发现会话时需过滤。
+- 该会话 `approvalPolicy: never`、`sandbox: dangerFullAccess`：没有协议审批。用户的审批写在 `~/.codex/AGENTS.md`（先出计划、等确认），即**在对话里用文字审批**，Telegram 回复文字即可，第一版不做审批按钮。
+
 未确认：
 
-- `thread/started` 是否广播给所有连接。备选方案是轮询 `thread/loaded/list`。
+- `thread/started` 是否对所有连接都广播（实测收到过一次，但当时本连接刚发过 `turn/start`）；实现时以轮询 `thread/loaded/list` 为准。
 - TUI 改用内嵌 server 时（例如设置了 `CODEX_EXEC_SERVER_URL`，或共享服务初始化失败），外部程序看不到这个会话，Telegram 无法接入。
 - Codex 终端里的斜杠命令属于 TUI 本地功能，app-server 没有通用的「执行斜杠命令」接口，需要逐个映射到对应 RPC。
 
@@ -87,7 +103,7 @@ mods 提供的相关能力（2.1.316 自带类型定义 `claude-code.d.ts` 与 `
 - 两种接入方式（`BotGateway` 的 `mode`）：
   - **thin（Claude Code）**：网关解析消息与按钮，向会话发 `prompt / abort / command / usage / restart` 等事件；回复、审批、选择框经 `/turn-complete`、`/prompt`、`/wait` 等由网关代发。只有 `a2t enable claude` 开启过的目录才登记成功。`/restart` 由网关起辅助程序，读 `/proc/<pid>/cmdline` 保留原参数，向同一 tmux 窗格输入 `claude … --resume <会话 ID>`。
   - **rich（Pi）**：网关只校验群与用户，把话题内的原始 update 原样交给 Pi（`{type:"update"}`），Pi 沿用原有处理并**自己直接发送**；按钮回调按话题或 Pi 上报的按钮消息 ID 路由。私聊不操作 Agent，只回一句提示。
-- Codex（阶段 5）：所有会话都在同一个常驻 app-server 里，预计由网关连接 app-server，按 thread 的 `cwd` 对应话题。
+- Codex（阶段 5，2026-11-02 实现）：所有终端会话都在 Codex 的共享 app-server 里。网关自己当客户端（`lib/gateway/codex.ts`），不往 Codex 里装东西：每 5 秒 `thread/loaded/list`，跳过 `ephemeral` 或带 `parentThreadId` 的辅助 thread；已开启目录（`~/.agent2telegram/codex/projects.json`）的 thread 用 thin 模式 `open` 进 BotGateway，`thread/resume` 订阅事件。话题文字 → `turn/start`（忙时 `turn/steer`）；`/stop` → `turn/interrupt`，`/compact` → `thread/compact/start`，`/usage` → `account/rateLimits/read`；`turn/started` → 正在输入，`turn/completed` → 最终回复（终端发起的回合也发）。未落盘的新 thread 无法订阅：发出 `turn/start` 后等 `thread/status/changed` 变 idle，再 `thread/read` 取结果并重试订阅。thread 卸载或 `thread/closed` → 关闭会话；app-server 断开 → 关闭全部会话，5 秒后重连。不做协议审批（终端处理）；`/clear`、`/restart`、`/model` 不支持。
 - 选型理由（11-02 与用户确认）：文件锁选主要写复杂的交接逻辑，交接慢且交接期会有 409；网关常驻约 26–95 MB、空闲时 CPU 近零。4b 把 Pi 从「实例间选主 + 本机转发」改为接入同一网关，删除了 `instance-coordinator`、`forum-router`、`polling`、历史回放与 Pi 私聊模式。
 - 代码：`lib/gateway/`（通用网关）、`lib/claude/mod/`（Claude 插件 `agent2telegram`）、`lib/pi/gateway-client.ts` 与 `lib/pi/forum-session.ts`（Pi 客户端）。
 
@@ -182,7 +198,7 @@ interface AgentAdapter {
 
 ## 8. 需要决定的事项
 
-1. 第 4 节架构：Claude Code 部分已确认并实现（mod + 常驻网关，TypeScript）；Codex 部分到阶段 5 再定。
+1. 第 4 节架构：Claude Code 部分已确认并实现（mod + 常驻网关，TypeScript）；Codex 部分 2026-11-02 确认并实现（网关直连共享 app-server，见 4.1）。
 2. 阶段顺序：已确认，见第 7 节。
 3. 本机已安装 Claude Code 2.1.316，此项无需再决定。
 4. Codex 和 Claude Code 的 Bot 与论坛群由你创建；Token 只在 SSH 中录入。

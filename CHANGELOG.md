@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Codex support: the gateway connects to Codex's shared app-server (WebSocket on `~/.codex/app-server-control/app-server-control.sock`) and serves each loaded terminal thread of a directory enabled with `a2t enable codex` in its own topic of the Codex Bot's forum group. Prompts become turns (steered into a running turn), final answers of every turn go to the topic, `/stop`, `/compact` and `/usage` map to app-server requests; nothing is installed into Codex. `a2t setup|enable|disable|status codex` and `install.sh --codex`. New dependency: `ws`. Thin-mode commands are now per agent (the "/" menu and the "unsupported" reply list only what the agent supports).
+
 - Removed Pi's `/tg-forum` (its `retry` went with 4b's gateway; the status bar, `/tg → 🧵 Online sessions` and `a2t status` cover what was left).
 
 - `a2t` manages Bots and folders; agents no longer do. `a2t setup pi|claude` requires your Telegram user ID, and pairing (pairing codes, `/pair`) is removed: without a user ID the gateway does not poll that Bot. Pi's `/tg` drops the Bots and Project items (and their add/update/remove/pairing/connect flows); it keeps Commands, Config, Online sessions and Debug info. An old per-folder `enabled: false` is ignored. `a2t disable` now drops a running session within about 10 seconds and says so in its topic; after `a2t enable` it comes back within about 5 seconds (refused sessions retry every 5 seconds) without a restart and announces itself in the topic again; the notice names the directory (`~/…`). `a2t setup` replaces the old Bot only after every answer checked out, so a typo keeps the old one.

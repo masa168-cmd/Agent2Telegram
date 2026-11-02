@@ -1,4 +1,4 @@
-// `a2t setup <pi|claude>`: interactive, run by the user in a terminal, so the
+// `a2t setup <pi|claude|codex>`: interactive, run by the user in a terminal, so the
 // Bot token never passes through anything else. Writes <agent data dir>/tg.json.
 import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
@@ -8,7 +8,9 @@ import { addBot, readBotRegistry, removeBot, setDefaultBot, setTelegramDataDir, 
 import { getTelegramBotUsername } from "../core/telegram-api.ts";
 import type { BotRecord } from "../core/types.ts";
 
-export type SetupAgent = "pi" | "claude";
+export type SetupAgent = "pi" | "claude" | "codex";
+
+const LABEL: Record<SetupAgent, string> = { pi: "Pi", claude: "Claude Code", codex: "Codex" };
 
 export async function runSetup(agent: SetupAgent, dataDir: string): Promise<number> {
   // Read from the terminal even when stdin is a pipe (curl … | bash).
@@ -26,7 +28,7 @@ export async function runSetup(agent: SetupAgent, dataDir: string): Promise<numb
   });
   try {
     setTelegramDataDir(dataDir);
-    console.log(`${agent === "pi" ? "Pi" : "Claude Code"} 的 Telegram 配置（${getTelegramConfigPath()}）`);
+    console.log(`${LABEL[agent]} 的 Telegram 配置（${getTelegramConfigPath()}）`);
     console.log("每个 Agent 用自己的 Bot 和自己的论坛群。");
     const registry = await readBotRegistry();
     if (registry.bots.length > 0) {
@@ -50,7 +52,7 @@ export async function runSetup(agent: SetupAgent, dataDir: string): Promise<numb
     await addBot(bot);
     await setDefaultBot(bot.id);
     console.log(`已保存 @${botUsername}。请确认 Bot 已是论坛群管理员，并有「管理话题」权限。`);
-    console.log(`下一步：a2t gateway restart，然后在项目目录运行 a2t enable ${agent}${agent === "pi" ? "，再在该目录启动 pi" : ""}。`);
+    console.log(`下一步：a2t gateway restart，然后在项目目录运行 a2t enable ${agent}${agent === "pi" ? "，再在该目录启动 pi" : agent === "codex" ? "，再在该目录的 tmux 里启动 codex" : ""}。`);
     return 0;
   } finally {
     rl.close();

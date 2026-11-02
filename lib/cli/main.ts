@@ -28,17 +28,20 @@ export function appDir(start = dirname(fileURLToPath(import.meta.url))): string 
 
 const USAGE = `用法：a2t <命令>
   status                      查看安装、网关和已开启的目录
-  setup <pi|claude>           配置 Bot（Token 只在这里输入）
-  enable <pi|claude> [目录]   在目录（默认当前目录）开启 Telegram
-  disable <pi|claude> [目录]  关闭
-  gateway <restart|status|logs>  网关服务（Pi 与 Claude Code 共用）
+  setup <pi|claude|codex>           配置 Bot（Token 只在这里输入）
+  enable <pi|claude|codex> [目录]   在目录（默认当前目录）开启 Telegram
+  disable <pi|claude|codex> [目录]  关闭
+  gateway <restart|status|logs>     网关服务（所有 Agent 共用）
   migrate [--apply]           把旧位置的数据迁到 ~/.agent2telegram（默认只列清单）
   uninstall [--purge]         卸载入口、插件和服务；--purge 连数据一起删除
   upgrade                     从 GitHub 重新安装最新版本`;
 
-function agentArg(value: string | undefined): "pi" | "claude" {
-  if (value === "pi" || value === "claude") return value;
-  throw new Error(`请指定 pi 或 claude。\n\n${USAGE}`);
+type Agent = "pi" | "claude" | "codex";
+const LABEL: Record<Agent, string> = { pi: "Pi", claude: "Claude Code", codex: "Codex" };
+
+function agentArg(value: string | undefined): Agent {
+  if (value === "pi" || value === "claude" || value === "codex") return value;
+  throw new Error(`请指定 pi、claude 或 codex。\n\n${USAGE}`);
 }
 
 function version(): string {
@@ -46,7 +49,7 @@ function version(): string {
 }
 
 /** What the gateway says about one agent: online sessions, or why it is not ready. */
-async function agentHealth(agent: "pi" | "claude"): Promise<string> {
+async function agentHealth(agent: Agent): Promise<string> {
   const reply = await postUnix(join(agentDataDir(agent), "gateway.sock"), "/health", {}, 2_000);
   if (!reply) return "网关未连接";
   return reply.ok ? `在线会话 ${(reply as { sessions?: number }).sessions ?? 0}` : `未就绪：${reply.reason ?? "?"}`;
@@ -56,12 +59,13 @@ async function status(): Promise<void> {
   const home = a2tHome();
   console.log(`agent2telegram ${version()}  程序：${appDir()}  数据：${home}`);
   console.log(`网关 ${GATEWAY_SERVICE}：${gatewayStatus()}；linger ${lingerEnabled(userInfo().username) ? "已开启" : "未开启"}`);
-  const piBots = existsSync(join(agentDataDir("pi"), "tg.json")) ? "已配置" : "未配置";
-  const claudeBots = existsSync(join(agentDataDir("claude"), "tg.json")) ? "已配置" : "未配置";
-  console.log(`Pi：Bot ${piBots}；${await agentHealth("pi")}；当前目录 ${isPiEnabled(process.cwd()) ? "已开启" : "未开启"}`);
-  console.log(`Claude Code：Bot ${claudeBots}；${await agentHealth("claude")}`);
-  const dirs = readClaudeProjects(agentDataDir("claude")).dirs;
-  console.log(`Claude 已开启目录：${dirs.length ? `\n  ${dirs.join("\n  ")}` : "无"}`);
+  const bots = (agent: Agent) => existsSync(join(agentDataDir(agent), "tg.json")) ? "已配置" : "未配置";
+  console.log(`Pi：Bot ${bots("pi")}；${await agentHealth("pi")}；当前目录 ${isPiEnabled(process.cwd()) ? "已开启" : "未开启"}`);
+  for (const agent of ["claude", "codex"] as const) {
+    console.log(`${LABEL[agent]}：Bot ${bots(agent)}；${await agentHealth(agent)}`);
+    const dirs = readClaudeProjects(agentDataDir(agent)).dirs;
+    console.log(`${LABEL[agent]} 已开启目录：${dirs.length ? `\n  ${dirs.join("\n  ")}` : "无"}`);
+  }
 }
 
 /** Called by install.sh after the app is in place: entries for the chosen agents. */
@@ -71,7 +75,7 @@ function postInstall(agents: string[]): void {
     if (!claudeAvailable()) console.log("未找到 claude 命令，跳过 Claude Code 插件。装好 Claude Code 后重新运行安装。");
     else for (const line of installClaudePlugin(app)) console.log(line);
   }
-  // Pi and Claude Code both reach Telegram through the gateway.
+  // Every agent reaches Telegram through the gateway; Codex needs nothing else.
   if (agents.length > 0) {
     if (process.env.A2T_SKIP_SYSTEMD === "1") console.log("已跳过 systemd 服务（A2T_SKIP_SYSTEMD=1）。");
     else {
@@ -82,7 +86,7 @@ function postInstall(agents: string[]): void {
       }
     }
   }
-  console.log("安装完成。下一步：a2t setup pi / a2t setup claude，然后在项目目录 a2t enable pi / a2t enable claude。");
+  console.log("安装完成。下一步：a2t setup <pi|claude|codex>，然后在项目目录 a2t enable <pi|claude|codex>。");
 }
 
 function uninstall(purge: boolean): void {
@@ -107,15 +111,15 @@ export async function main(argv: string[]): Promise<number> {
         console.log(done.result === "unchanged" ? `Pi 已在 ${dir} 开启。` : `已在 ${dir} 开启 Pi（${done.path}）。新启动的 pi 会加载它；关闭前就在运行的 pi 约 5 秒内自动接回。`);
         for (const legacy of done.removedLegacy) console.log(`已移除旧入口 ${legacy}`);
       } else {
-        console.log(enableClaudeProject(agentDataDir("claude"), dir)
-          ? `已在 ${dir} 开启 Claude Code；该目录的会话约 5 秒内自动接入。` : `Claude Code 已在 ${dir} 开启。`);
+        console.log(enableClaudeProject(agentDataDir(agent), dir)
+          ? `已在 ${dir} 开启 ${LABEL[agent]}；该目录的会话约 5 秒内自动接入。` : `${LABEL[agent]} 已在 ${dir} 开启。`);
       }
       return 0;
     }
     case "disable": {
       const agent = agentArg(rest[0]);
       const dir = resolve(rest[1] ?? process.cwd());
-      const changed = agent === "pi" ? disablePi(dir) : disableClaudeProject(agentDataDir("claude"), dir);
+      const changed = agent === "pi" ? disablePi(dir) : disableClaudeProject(agentDataDir(agent), dir);
       console.log(changed ? `已在 ${dir} 关闭 ${agent}；正在运行的会话约 10 秒内断开。` : `${agent} 本来就没有在 ${dir} 开启。`);
       return 0;
     }

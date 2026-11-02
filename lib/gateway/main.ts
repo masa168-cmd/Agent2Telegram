@@ -3,6 +3,7 @@
 // session on this machine over a Unix socket per agent:
 //   Pi          → <pi data>/gateway.sock      (rich: raw updates of its topic)
 //   Claude Code → <claude data>/gateway.sock  (thin: the gateway reads the topic)
+//   Codex       → no client of its own: the gateway drives Codex's app-server (codex.ts)
 // See bot-gateway.ts for the session protocol.
 import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -13,7 +14,9 @@ import { getAgentDir } from "../core/data-dir.ts";
 import { createTelegramTransport, getTelegramUpdates, telegramApi } from "../core/telegram-api.ts";
 import { telegramTokenHash } from "../core/forum-binding.ts";
 import type { BotRecord, TelegramConfig } from "../core/types.ts";
-import { BotGateway } from "./bot-gateway.ts";
+import { BotGateway, type MenuCommand } from "./bot-gateway.ts";
+import { CODEX_COMMANDS, CodexBridge, connectCodex } from "./codex.ts";
+import { agentDataDir } from "../core/a2t-home.ts";
 import { isClaudeProjectEnabled } from "./claude-projects.ts";
 import { claimBot, type AgentName } from "./ownership.ts";
 import { claudeTelegramDir, runtimeDir } from "./paths.ts";
@@ -61,6 +64,7 @@ type AgentSpec = {
   isEnabled?(cwd: string): boolean;
   /** Thin clients get the gateway's own "/" menu and /restart helper. */
   thin: boolean;
+  commands?: readonly MenuCommand[];
 };
 
 /** `a2t enable pi` wrote an entry in `cwd` or one of its parents. */
@@ -74,6 +78,7 @@ function isPiEnabledHere(cwd: string): boolean {
 function agentSpecs(): AgentSpec[] {
   const piDir = getAgentDir();
   const claudeDir = claudeTelegramDir();
+  const codexDir = agentDataDir("codex");
   return [
     { agent: "pi", label: "Pi", mode: "rich", dataDir: piDir, thin: false,
       // Pi's existing store and cursor, so topics and the offset carry over.
@@ -84,6 +89,10 @@ function agentSpecs(): AgentSpec[] {
       topicsPath: () => join(runtimeDir(claudeDir), "topics.json"),
       cursorPath: token => join(runtimeDir(claudeDir), `${telegramTokenHash(token)}.cursor.json`),
       isEnabled: cwd => isClaudeProjectEnabled(claudeDir, cwd) },
+    { agent: "codex", label: "Codex", mode: "thin", dataDir: codexDir, thin: true, commands: CODEX_COMMANDS,
+      topicsPath: () => join(runtimeDir(codexDir), "topics.json"),
+      cursorPath: token => join(runtimeDir(codexDir), `${telegramTokenHash(token)}.cursor.json`),
+      isEnabled: cwd => isClaudeProjectEnabled(codexDir, cwd) },
   ];
 }
 
@@ -127,11 +136,12 @@ async function serveAgent(spec: AgentSpec, stopping: () => boolean, onStop: Arra
     dataDir: spec.dataDir, mode: spec.mode, agentLabel: spec.label,
     ...(bot ? { topicsPath: spec.topicsPath(bot.token) } : {}),
     ...(spec.isEnabled ? { isEnabled: spec.isEnabled } : {}),
+    ...(spec.commands ? { commands: spec.commands } : {}),
     getConfig: () => config,
     api: (method, body) => telegramApi(config.botToken!, method, body, abort.signal, config.apiBase),
     transport: createTelegramTransport(() => config, { getAbortSignal: () => abort.signal }),
     // The gateway is not in the agent's process tree, so the helper outlives it.
-    ...(spec.thin ? {
+    ...(spec.agent === "claude" ? {
       startRestart: (job: object) => {
         spawn(process.execPath, [helper, JSON.stringify({ ...job, logPath: join(runtimeDir(spec.dataDir), "restart.jsonl") })],
           { detached: true, stdio: "ignore" }).unref();
@@ -188,6 +198,10 @@ async function serveAgent(spec: AgentSpec, stopping: () => boolean, onStop: Arra
   if (disabled) { log(`${tag} disabled: ${disabled}`); return; }
   if (spec.thin) await gateway.registerCommands().catch(error => log(`${tag} setMyCommands failed: ${String(error)}`));
   log(`${tag} polling for ${bot!.name}`);
+  if (spec.agent === "codex") {
+    void new CodexBridge({ gateway, connect: () => connectCodex(), log }).run(stopping)
+      .catch(error => log(`${tag} bridge failed: ${String(error)}`));
+  }
   let conflicts = 0;
   while (!stopping()) {
     try {

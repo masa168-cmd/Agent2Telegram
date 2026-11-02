@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # agent2telegram installer / upgrader:
 #   curl -fsSL https://raw.githubusercontent.com/masa168-cmd/Agent2Telegram/main/install.sh | bash
-# Options: --pi --claude (which agents; asked when neither is given), --yes (no questions).
+# Options: --pi --claude --codex (which agents; asked when none is given), --yes (no questions).
 # Environment: AGENT2TELEGRAM_DIR (default ~/.agent2telegram), A2T_REF (branch or tag, default main),
 #   A2T_SOURCE (install from a local checkout instead of GitHub), A2T_SKIP_SYSTEMD=1 (no service).
-# It never asks for or stores a Bot token: run `a2t setup pi|claude` afterwards.
+# It never asks for or stores a Bot token: run `a2t setup pi|claude|codex` afterwards.
 set -euo pipefail
 
 REPO="masa168-cmd/Agent2Telegram"
@@ -21,6 +21,7 @@ for arg in "$@"; do
   case "$arg" in
     --pi) AGENTS="$AGENTS pi" ;;
     --claude) AGENTS="$AGENTS claude" ;;
+    --codex) AGENTS="$AGENTS codex" ;;
     --yes|-y) ASSUME_YES=1 ;;
     *) die "未知参数：$arg" ;;
   esac
@@ -37,13 +38,13 @@ node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(
 # ── Which agents ─────────────────────────────────────────────────────────
 if [ -z "$AGENTS" ]; then
   if [ "$ASSUME_YES" = 1 ]; then
-    AGENTS="pi claude"
+    AGENTS="pi claude codex"
   elif [ -r /dev/tty ]; then
-    say "接入哪些 Agent？ 1) Pi  2) Claude Code  3) 两个都要 [3]"
+    say "接入哪些 Agent？ 1) Pi  2) Claude Code  3) Codex  4) 全部 [4]"
     read -r choice </dev/tty || choice=""
-    case "${choice:-3}" in 1) AGENTS="pi" ;; 2) AGENTS="claude" ;; *) AGENTS="pi claude" ;; esac
+    case "${choice:-4}" in 1) AGENTS="pi" ;; 2) AGENTS="claude" ;; 3) AGENTS="codex" ;; *) AGENTS="pi claude codex" ;; esac
   else
-    die "无法提问（没有终端）：请加 --pi 和/或 --claude，或 --yes。"
+    die "无法提问（没有终端）：请加 --pi、--claude、--codex 中的一个或多个，或 --yes。"
   fi
 fi
 

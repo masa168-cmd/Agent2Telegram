@@ -6,8 +6,6 @@ import type { CapturedAgentSession } from "../captured-session.ts";
 import {
   buildTelegramMenuCommands,
   buildTelegramMenuCommandsFull,
-  getTelegramCommandKeyboard,
-  getTelegramMenuAll,
   getTelegramMenuOverflow,
   scheduleTelegramCommandRefresh,
   syncTelegramCommands,
@@ -354,23 +352,8 @@ describe("/more overflow keyboard", () => {
   });
 });
 
-describe("input-area command keyboard", () => {
-  it("lists every synced menu command as /name buttons, 3 per row, capped at 99", async () => {
-    const pi = { getCommands: () => Array.from({ length: 140 }, (_, index) => ({
-      name: `cmd_${index}`, description: `Command ${index}`, source: "extension" as const })) } as any;
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ ok: true, result: true }), {
-      status: 200, headers: { "content-type": "application/json" } })));
-    try { await syncTelegramCommands("token-all-flow", pi, "https://api.example"); } finally { vi.unstubAllGlobals(); }
-    const all = getTelegramMenuAll("token-all-flow", "https://api.example");
-    expect(all.some((c) => c.command === "more")).toBe(false);
-    const keyboard = getTelegramCommandKeyboard("token-all-flow", "https://api.example");
-    expect(keyboard).toHaveLength(33);
-    expect(keyboard.every((row) => row.length === 3)).toBe(true);
-    expect(keyboard.flat()).toEqual(all.slice(0, 99).map((c) => `/${c.command}`));
-    expect(getTelegramCommandKeyboard("token-never-synced")).toEqual([]);
-  });
-
-  it("swaps the old 📋 命令 button for the keyboard, expires old list pages, and ignores keyboard-notice replies", async () => {
+describe("stale input-area command keyboard", () => {
+  it("answers a stale 📋 命令 button by removing the keyboard, expires old list pages, and ignores keyboard-notice replies", async () => {
     const pi = { getCommands: () => [{ name: "cmd_a", description: "A", source: "extension" as const }] } as any;
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ ok: true, result: true }), {
       status: 200, headers: { "content-type": "application/json" } })));
@@ -392,9 +375,8 @@ describe("input-area command keyboard", () => {
     await controller.handleMessage({ message_id: 1, chat: { id: 42, type: "private" }, from: { id: 7 }, text: "📋 命令" });
     expect(session.prompt).not.toHaveBeenCalled();
     expect(transport.sendText).toHaveBeenCalledTimes(1);
-    const expected = getTelegramCommandKeyboard("token-kb-flow", "https://api.example");
-    expect(expected.flat()).toContain("/cmd_a");
-    expect((transport.sendText.mock.calls[0] as unknown[])[5]).toEqual({ replyKeyboard: expected });
+    expect(String((transport.sendText.mock.calls[0] as unknown[])[1])).toContain("命令按钮已移除");
+    expect((transport.sendText.mock.calls[0] as unknown[])[5]).toEqual({ removeKeyboard: true });
 
     await controller.handleCallbackQuery({ id: "q", from: { id: 7 }, data: "tgplus:cmds:1",
       message: { chat: { id: 42, type: "private" }, message_id: 5 } } as any);

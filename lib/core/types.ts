@@ -186,8 +186,8 @@ export type TelegramTransport = {
     messageThreadId?: number,
     replyToMessageId?: number,
     richMarkdown?: string,
-    /** `replyKeyboard`: persistent reply keyboard rows (button texts) attached to the first chunk. */
-    options?: { maxAttempts?: number; replyKeyboard?: string[][] },
+    /** `removeKeyboard`: take away a reply keyboard an older version left in the input area. */
+    options?: { maxAttempts?: number; removeKeyboard?: boolean },
   ): Promise<TelegramSentMessage[]>;
   sendButtons(
     chatId: number,

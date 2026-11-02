@@ -29,7 +29,7 @@ function setup(initial: TelegramConfig = { botToken: TOKEN, forumChatId: CHAT, a
   const buttons: Array<{ text: string; rows: Button[][]; threadId?: number }> = [];
   const api = vi.fn(async (method: string, _body: Record<string, unknown>) => {
     if (method === "createForumTopic") return { message_thread_id: nextThread++ };
-    if (method === "setMyCommands" || method === "sendMessage") return true;
+    if (method === "setMyCommands") return true;
     if (method === "reopenForumTopic") { if (reopenError) throw new Error(reopenError); return true; }
     throw new Error(`unexpected ${method}`);
   });
@@ -247,23 +247,7 @@ describe("BotGateway commands", () => {
       { type: "abort" }, { type: "abort" }, { type: "command", name: "compact" }, { type: "command", name: "clear" },
       { type: "command", name: "status" }, { type: "command", name: "model" }, { type: "command", name: "effort" },
       { type: "command", name: "commands" }, { type: "usage" }]);
-    expect(t.sent.at(-1)?.text).toBe("暂不支持这个命令。可用：/menu /stop /status /model /effort /commands /compact /clear /usage /restart");
-  });
-
-  it("/menu puts the commands on a reply keyboard that folds after a tap; a new topic does not get it", async () => {
-    const t = setup();
-    await t.gateway.open({ connId: "a", cwd: "/work/alpha" });
-    const sends = () => t.api.mock.calls.filter(c => c[0] === "sendMessage").map(c => c[1] as Record<string, unknown>);
-    expect(sends()).toHaveLength(0);
-    t.gateway.close("a");
-    await t.gateway.handleUpdate(topicMessage("/menu"));
-    expect(sends()).toHaveLength(1);
-    const sent = sends()[0]!;
-    expect(sent).toMatchObject({ chat_id: CHAT, message_thread_id: 77 });
-    const markup = sent.reply_markup as { keyboard: Array<Array<{ text: string }>>; is_persistent: boolean; one_time_keyboard: boolean };
-    expect(markup).toMatchObject({ is_persistent: false, one_time_keyboard: true });
-    expect(markup.keyboard.flat().map(b => b.text)).toEqual(["/stop", "/status", "/model", "/effort", "/commands", "/compact", "/clear", "/usage", "/restart"]);
-    expect(markup.keyboard[0]).toHaveLength(4);
+    expect(t.sent.at(-1)?.text).toBe("暂不支持这个命令。可用：/stop /status /model /effort /commands /compact /clear /usage /restart");
   });
 
   it("registers the / menu for the forum group only", async () => {
@@ -271,7 +255,7 @@ describe("BotGateway commands", () => {
     await t.gateway.registerCommands();
     expect(t.api).toHaveBeenCalledWith("setMyCommands", expect.objectContaining({ scope: { type: "chat", chat_id: CHAT } }));
     const commands = (t.api.mock.calls[0]![1] as { commands: Array<{ command: string }> }).commands.map(c => c.command);
-    expect(commands).toEqual(["menu", "stop", "status", "model", "effort", "commands", "compact", "clear", "usage", "restart"]);
+    expect(commands).toEqual(["stop", "status", "model", "effort", "commands", "compact", "clear", "usage", "restart"]);
   });
 
   it("/restart only for a session in tmux; the helper keeps the old flags; reopening says restarted", async () => {

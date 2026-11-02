@@ -10,7 +10,6 @@ import type { BotGateway, GatewayEvent, MenuCommand } from "./bot-gateway.ts";
 
 /** Codex's "/" menu: what maps onto app-server requests. */
 export const CODEX_COMMANDS: readonly MenuCommand[] = [
-  { command: "menu", description: "在输入框下方显示快捷按钮" },
   { command: "stop", description: "中断当前回合" },
   { command: "compact", description: "压缩上下文" },
   { command: "usage", description: "查看用量" },

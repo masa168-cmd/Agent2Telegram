@@ -238,31 +238,9 @@ function syncKey(botToken: string, apiBase?: string): string {
 }
 
 const menuOverflowByBot = new Map<string, Array<{ command: string; description: string }>>();
-const menuAllByBot = new Map<string, Array<{ command: string; description: string }>>();
 
-/** Text of the former single input-area button; still recognised so a stale keyboard never prompts the model. */
+/** Text of an old input-area button; still recognised so a stale keyboard never prompts the model. */
 export const COMMAND_MENU_BUTTON = "📋 命令";
-
-/** Buttons per row and the button cap of the input-area command keyboard. */
-const KEYBOARD_ROW_SIZE = 3;
-const KEYBOARD_MAX_BUTTONS = 99;
-
-/**
- * Persistent reply-keyboard rows for the phone input area: every synced menu command as `/name`,
- * in menu order. Tapping one sends that command as a normal message. Empty until the first sync.
- */
-export function getTelegramCommandKeyboard(botToken: string | undefined, apiBase?: string): string[][] {
-  const names = getTelegramMenuAll(botToken, apiBase).slice(0, KEYBOARD_MAX_BUTTONS).map(entry => `/${entry.command}`);
-  const rows: string[][] = [];
-  for (let i = 0; i < names.length; i += KEYBOARD_ROW_SIZE) rows.push(names.slice(i, i + KEYBOARD_ROW_SIZE));
-  return rows;
-}
-
-/** Every command of the last menu sync (BotMenu entries without /more, then the overflow). */
-export function getTelegramMenuAll(botToken: string | undefined, apiBase?: string): Array<{ command: string; description: string }> {
-  if (!botToken) return [];
-  return menuAllByBot.get(syncKey(botToken, apiBase)) ?? [];
-}
 
 /** Overflow commands from the last menu sync for this bot, newest menu first. */
 export function getTelegramMenuOverflow(botToken: string | undefined, apiBase?: string): Array<{ command: string; description: string }> {
@@ -278,8 +256,6 @@ async function doSyncTelegramCommands(botToken: string, pi: ExtensionAPI, apiBas
   const { commands, overflow } = buildTelegramMenuCommandsFull(pi, { recent, tuiCommands });
   await setTelegramMyCommands(botToken, commands, apiBase);
   menuOverflowByBot.set(syncKey(botToken, apiBase), overflow);
-  const all = overflow.length > 0 ? commands.filter(entry => entry.command !== "more") : commands;
-  menuAllByBot.set(syncKey(botToken, apiBase), [...all, ...overflow]);
 }
 
 export async function syncTelegramCommands(botToken: string | undefined, pi: ExtensionAPI, apiBase?: string): Promise<void> {

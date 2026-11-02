@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- Claude Code and Codex topics: `/menu` shows every command as a reply keyboard under the input (forum groups have no menu button, and clients cache the "/" list); it folds after a tap and opens again from the keyboard icon.
+- Pi: the input-area command keyboard is gone (it popped up on its own on phones). The "已接入" notice now takes away a keyboard an older version left; a stale "📋 命令" tap only removes it. `sendText`'s `replyKeyboard` option is replaced by `removeKeyboard`.
 
 - Claude Code topics: new `/status` (model and effort, directory, session, turns, context use, rate limits, cost), `/model` (Opus / Sonnet / Haiku buttons), `/effort` (low…max buttons) and `/commands` (your skills and plugin commands as buttons). `/model` and `/effort` run Claude Code's own `/model <name>` and `/effort <level>`, which also save the choice as the default for new sessions; unanswered menus are taken back after 5 minutes.
 

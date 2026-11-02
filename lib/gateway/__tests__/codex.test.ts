@@ -126,9 +126,9 @@ describe("CodexBridge", () => {
     await until(() => t.texts().some(s => s.startsWith("Codex 用量")));
     expect(t.texts().find(s => s.startsWith("Codex 用量"))).toContain("5 小时：已用 12%");
     await t.say("/clear");
-    expect(t.texts().at(-1)).toBe("暂不支持这个命令。可用：/menu /stop /compact /usage");
+    expect(t.texts().at(-1)).toBe("暂不支持这个命令。可用：/stop /compact /usage");
     await t.say("/model");
-    expect(t.texts().at(-1)).toBe("暂不支持这个命令。可用：/menu /stop /compact /usage");
+    expect(t.texts().at(-1)).toBe("暂不支持这个命令。可用：/stop /compact /usage");
   });
 
   it("a brand-new thread (not on disk) still runs; the answer is read when it goes idle", async () => {

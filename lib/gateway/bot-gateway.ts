@@ -46,7 +46,6 @@ export type MenuCommand = { command: string; description: string };
 
 /** Commands shown in the group's "/" menu (Claude Code). */
 export const MENU_COMMANDS: readonly MenuCommand[] = [
-  { command: "menu", description: "在输入框下方显示快捷按钮" },
   { command: "stop", description: "中断当前回合" },
   { command: "status", description: "模型、上下文、用量一览" },
   { command: "model", description: "切换模型（同时设为默认）" },
@@ -377,10 +376,6 @@ export class BotGateway {
     const threadId = message.message_thread_id;
     const text = message.text?.trim();
     if (threadId === undefined || !text) return;
-    if (/^\/menu(?:@\w+)?$/.test(text)) {
-      await this.sendMenu(threadId);
-      return;
-    }
     const session = this.sessionForThread(threadId);
     if (!session) {
       const cwd = await this.topicCwd(threadId);
@@ -433,22 +428,6 @@ export class BotGateway {
       : update;
     this.push(session, { type: "update", update: routed });
     return true;
-  }
-
-  /**
-   * Thin mode, on /menu: a reply keyboard, one button per command, so a tap
-   * sends it (the group has no menu button, and clients cache the "/" list).
-   * It folds after a tap; the keyboard icon in the input opens it again.
-   */
-  async sendMenu(threadId: number): Promise<void> {
-    const config = this.deps.getConfig();
-    if (config.forumChatId === undefined) return;
-    const buttons = this.commands.filter(c => c.command !== "menu").map(c => ({ text: `/${c.command}` }));
-    const keyboard: Array<Array<{ text: string }>> = [];
-    for (let i = 0; i < buttons.length; i += 4) keyboard.push(buttons.slice(i, i + 4));
-    await this.deps.api("sendMessage", { chat_id: config.forumChatId, message_thread_id: threadId,
-      text: `快捷按钮（${this.label}）：点一个后自动收起，点输入框旁的键盘图标可再打开。`,
-      reply_markup: { keyboard, is_persistent: false, one_time_keyboard: true, resize_keyboard: true } });
   }
 
   /** Register the "/" menu for the forum group only. */

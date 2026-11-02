@@ -27,7 +27,7 @@ import { registerAllCommands } from "./lib/pi/commands/register.ts";
 import { registerTgMenuCommand } from "./lib/pi/commands/tg-menu.ts";
 import { registerContextBudgetCommand } from "./lib/pi/commands/context-budget.ts";
 import { ContextBudgetRuntime } from "./lib/pi/context-budget/runtime.ts";
-import { syncTelegramCommands, scheduleTelegramCommandRefresh, cancelTelegramCommandRefreshes, getTelegramCommandKeyboard } from "./lib/pi/menu-commands.ts";
+import { syncTelegramCommands, scheduleTelegramCommandRefresh, cancelTelegramCommandRefreshes } from "./lib/pi/menu-commands.ts";
 import { installTuiBridge, tuiBridge, getTuiCommands } from "./lib/pi/tui-bridge.ts";
 import { SecretStore } from "./lib/pi/tui/secrets.ts";
 import type { ResolvedTelegramConfig, TelegramConfig, TelegramTurn } from "./lib/core/types.ts";
@@ -404,15 +404,14 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
     const dirLabel = topicName.startsWith("/") || topicName === "~" ? topicName : `~/${topicName}`;
     const token = config.botToken;
     const apiBase = config.apiBase;
-    // The keyboard lists the synced menu, so wait for the host catalog and the menu sync.
+    // Sync the "/" menu first; the notice also takes away an older version's command keyboard.
     void (async () => {
       await tuiBridge.ready();
       await syncTelegramCommands(token, pi, apiBase);
       if (disposed || config.botToken !== token || forum.lease() !== forumLease) return;
-      const keyboard = getTelegramCommandKeyboard(token, apiBase);
       await transport.sendText(target.chatId,
         `<b>— 会话 ${escapeHtml(target.sessionId.slice(0, 8))} 已接入 —</b>\n本话题对应目录 <code>${escapeHtml(dirLabel)}</code>；/new、恢复会话后仍在本话题，以上为之前会话的内容。`, target.threadId,
-        undefined, undefined, keyboard.length > 0 ? { replyKeyboard: keyboard } : undefined);
+        undefined, undefined, { removeKeyboard: true });
       // Notices a superseded runtime queued (/new and /reload results).
       deliverPendingNotices(transport);
     })().catch(indexLog.swallow("warn", "send forum online notice failed"));

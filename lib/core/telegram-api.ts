@@ -311,14 +311,9 @@ export function createTelegramTransport(
   return {
     async sendText(chatId, text, messageThreadId, replyToMessageId, richMarkdown, delivery) {
       const lease = captureSendLease();
-      const keyboardRows = delivery?.replyKeyboard;
-      // An input-area reply keyboard (works in private chats and groups). Not `is_persistent`:
-      // that would pop the keyboard up whenever the system keyboard is hidden; the user opens
-      // it from the keyboard icon instead.
-      const replyKeyboard = keyboardRows?.length
-        ? { reply_markup: { keyboard: keyboardRows.map(row => row.map(text => ({ text }))), resize_keyboard: true } }
-        : {};
-      if (richMarkdown && richMessagesAvailable && !keyboardRows?.length) {
+      // Older versions put a command keyboard in the input area; this takes it away.
+      const removeKeyboard = delivery?.removeKeyboard ? { reply_markup: { remove_keyboard: true } } : {};
+      if (richMarkdown && richMessagesAvailable && !delivery?.removeKeyboard) {
         const rich = await sendRich(richMarkdown, chatId, lease, messageThreadId, replyToMessageId, delivery);
         if (rich) return [rich];
       }
@@ -328,7 +323,7 @@ export function createTelegramTransport(
       // of the legacy byte splitter that could split mid-<pre>/<blockquote>
       // and force a plain-text fallback.
       for (const chunk of splitTelegramHtml(text)) {
-        const markup = sent.length === 0 ? replyKeyboard : {};
+        const markup = sent.length === 0 ? removeKeyboard : {};
         const body = {
           chat_id: chatId,
           text: chunk,

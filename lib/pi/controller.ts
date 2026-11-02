@@ -17,7 +17,7 @@ import type { TuiBridgeAdapter } from "./tui-bridge.ts";
 import { tuiBridge as defaultTuiBridge, hostOwnsPrompts } from "./tui-bridge.ts";
 import { escapeHtml } from "../core/html.ts";
 import { recordCommandUsage } from "../core/command-usage.ts";
-import { getTelegramMenuOverflow, getTelegramCommandKeyboard, COMMAND_MENU_BUTTON, TELEGRAM_BLOCKED_COMMANDS } from "./menu-commands.ts";
+import { getTelegramMenuOverflow, COMMAND_MENU_BUTTON, TELEGRAM_BLOCKED_COMMANDS } from "./menu-commands.ts";
 import { log } from "../core/logger.ts";
 import { commandErrorMessage, getRunnerMode, restoreRunnerUiContext, setRunnerUiContext, TELEGRAM_EXTENSION_MODE } from "./pi-compat.ts";
 import { isOmpHost } from "./session-capture.ts";
@@ -183,8 +183,8 @@ function buildTelegramExternalReplyBlock(message: TelegramMessage): string {
   return lines.length > 1 ? lines.join("\n") : "";
 }
 
-// Bot notices that carry the input-area command keyboard. In groups the client auto-replies
-// to such a message when a keyboard button is tapped, so that reply is not a user quote.
+// Bot notices that carried an older version's input-area command keyboard. In groups the client
+// auto-replies to such a message when a stale button is tapped, so that reply is not a user quote.
 function isKeyboardNoticeReply(reply: TelegramMessage | undefined): boolean {
   if (!reply?.from?.is_bot) return false;
   const text = reply.text ?? "";
@@ -1516,14 +1516,9 @@ export function createTelegramController(deps: {
       const text = normalizeLeadingCommand(rawText, deps.getBotUsername());
       const trimmed = text.trim();
       if (trimmed === COMMAND_MENU_BUTTON) {
-        // The old single button may still be shown until the next "已接入" notice; swap it for
-        // the full command keyboard instead of prompting the model with the button text.
-        const config = deps.getConfig?.();
-        const keyboard = getTelegramCommandKeyboard(config?.botToken, config?.apiBase);
-        await deps.transport.sendText(chatId, keyboard.length > 0
-          ? "命令按钮已更新：点输入框旁的键盘图标即可查看全部命令。"
-          : "命令列表尚未同步，请稍后再试，或直接输入 /。", messageThreadId, sourceMessageId,
-          undefined, keyboard.length > 0 ? { replyKeyboard: keyboard } : undefined);
+        // A stale keyboard from an older version: take it away instead of prompting the model.
+        await deps.transport.sendText(chatId, "命令按钮已移除：请直接输入 /，或用 /tg 菜单。", messageThreadId, sourceMessageId,
+          undefined, { removeKeyboard: true });
         return;
       }
       const replyToInput = message.reply_to_message?.message_id;

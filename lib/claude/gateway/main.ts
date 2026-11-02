@@ -13,6 +13,7 @@ import { telegramTokenHash } from "../../core/instance-coordinator.ts";
 import type { BotRecord, TelegramConfig } from "../../core/types.ts";
 import { ClaudeGateway } from "./gateway.ts";
 import { claimBot } from "./ownership.ts";
+import { isClaudeProjectEnabled } from "./projects.ts";
 import { claudeTelegramDir, runtimeDir } from "./paths.ts";
 
 const POLL_HOLD_MS = 20_000;
@@ -99,6 +100,7 @@ async function main(): Promise<void> {
       spawn(process.execPath, [helper, JSON.stringify({ ...job, logPath: join(runtimeDir(dataDir), "restart.jsonl") })],
         { detached: true, stdio: "ignore" }).unref();
     },
+    isEnabled: cwd => isClaudeProjectEnabled(dataDir, cwd),
     readArgv: pid => {
       try { return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean); } catch { return undefined; }
     },

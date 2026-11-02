@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/package",
-  "name": "pi-telegram-plus-ex",
+  "name": "agent2telegram",
   "version": "0.1.0",
   "description": "Telegram forum-topic control of online Pi sessions, with local multi-instance routing, interactive UI, files and streaming output",
   "keywords": [

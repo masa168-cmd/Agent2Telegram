@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { addBot, resolveTelegramConfig } from "../../core/config.ts";
+import { dirname, join } from "node:path";
+import { addBot, getProjectBindingPath, resolveTelegramConfig } from "../../core/config.ts";
 import type { BotRecord } from "../../core/types.ts";
 import { createTelegramController } from "../controller.ts";
 import type { TelegramTransport } from "../../core/types.ts";
@@ -32,9 +32,9 @@ describe("legacy tuiBridge key is ignored", () => {
   it("drops tuiBridge from an old project binding without failing the read", async () => {
     const bot: BotRecord = { id: "b1", name: "test-bot", token: "tok-1" };
     await addBot(bot);
-    await mkdir(join(projectDir, ".pi"), { recursive: true });
+    await mkdir(dirname(getProjectBindingPath(projectDir)), { recursive: true });
     await writeFile(
-      join(projectDir, ".pi", "telegram.json"),
+      getProjectBindingPath(projectDir),
       JSON.stringify({ botId: bot.id, tuiBridge: "commands", tool: "brief" }),
       "utf8",
     );

@@ -16,7 +16,7 @@ type GatewayEvent =
   | { type: 'log'; text: string }
 
 type PendingResult = { answer: string } | { cancelled: true } | { pending: true }
-type OpenResult = { ok: true; threadId?: number; notices?: string[] } | { ok: false; reason: string }
+type OpenResult = { ok: true; threadId?: number; notices?: string[] } | { ok: false; reason: string; quiet?: true }
 
 const ALLOW = '✅ 允许'
 const DENY = '❌ 拒绝'
@@ -159,9 +159,11 @@ async function open($: EngineInterface, cwd: string): Promise<boolean> {
     pane: (await $.env.get('TMUX_PANE')) ?? '',
     modDir: $.plugin.root,
   }) as OpenResult | undefined
-  const reason = result === undefined ? 'Telegram 网关未运行（systemctl --user status claude-telegram-gateway）。' : result.ok ? undefined : result.reason
+  const reason = result === undefined ? 'Telegram 网关未运行（a2t status）。' : result.ok ? undefined : result.reason
   if (reason !== undefined) {
-    if (reason !== lastReason) $.ui.log(reason)
+    // A directory that is simply not enabled stays idle and says nothing.
+    const quiet = result !== undefined && !result.ok && result.quiet === true
+    if (reason !== lastReason && !quiet) $.ui.log(reason)
     lastReason = reason
     connected = false
     return false
@@ -195,7 +197,9 @@ export const register: Register = (on) => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     if (!e.isInteractive) return started
-    const dataDir = (await $.env.get('CLAUDE_TELEGRAM_DIR')) ?? `${await $.env.get('HOME')}/.claude-telegram`
+    // Same rule as the gateway: $CLAUDE_TELEGRAM_DIR, else <$AGENT2TELEGRAM_DIR or ~/.agent2telegram>/claude.
+    const dataDir = (await $.env.get('CLAUDE_TELEGRAM_DIR'))
+      ?? `${(await $.env.get('AGENT2TELEGRAM_DIR')) ?? `${await $.env.get('HOME')}/.agent2telegram`}/claude`
     socketPath = `${dataDir}/gateway.sock`
     void serve($, e.cwd)
     return started

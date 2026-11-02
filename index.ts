@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { basename, extname, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createActiveTelegramTransport } from "./lib/core/active-transport.ts";
+import { a2tCacheDir } from "./lib/core/a2t-home.ts";
 import { registerTelegramAttachmentTool } from "./lib/pi/attachments.ts";
 import { enableConfiguredTelegramOnStartup, readResolvedTelegramConfig, persistProjectRuntimeState, resetProjectBindingCursor, updateBot, getAgentDir } from "./lib/core/config.ts";
 import { createTelegramController, type TelegramCommandHandler } from "./lib/pi/controller.ts";
@@ -149,9 +149,9 @@ export default function piTelegramPlusEx(rawPi: ExtensionAPI): void {
     return resolve(dir, `${Date.now()}-${randomUUID().slice(0, 8)}-${safeFileId.slice(0, 18)}-${base}${ext}`);
   };
 
-  /** Uploads live in one cache directory instead of the project: <XDG cache>/pi-telegram/uploads/<launch dir name>/. */
-  const incomingUploadDir = (cwd: string): string => join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"),
-    "pi-telegram", "uploads", sanitizeIncomingFileName(basename(resolve(cwd)) || "root"));
+  /** Uploads live in one cache directory instead of the project: ~/.agent2telegram/cache/uploads/<launch dir name>/. */
+  const incomingUploadDir = (cwd: string): string => join(a2tCacheDir(),
+    "uploads", sanitizeIncomingFileName(basename(resolve(cwd)) || "root"));
 
   const persistCurrentConfig = async (nextConfig = config): Promise<void> => {
     if (!resolvedConfig) resolvedConfig = await readResolvedTelegramConfig(currentSessionCwd());

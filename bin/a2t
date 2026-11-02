@@ -1,0 +1,4 @@
+#!/bin/sh
+# agent2telegram command line: runs the compiled CLI of the app this file belongs to.
+here=$(dirname "$(readlink -f "$0")")
+exec node "$here/../dist/lib/cli/main.js" "$@"

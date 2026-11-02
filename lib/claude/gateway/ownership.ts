@@ -3,6 +3,8 @@
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { a2tHome } from "../../core/a2t-home.ts";
+import { getAgentDir } from "../../core/data-dir.ts";
 import { telegramTokenHash } from "../../core/instance-coordinator.ts";
 
 export type AgentName = "pi" | "claude" | "codex";
@@ -10,11 +12,13 @@ export type OwnershipResult = { ok: true } | { ok: false; reason: string };
 
 /** Shared by every agent: `$AGENT2TELEGRAM_DIR` or `~/.agent2telegram`. */
 export function ownershipDir(): string {
-  return process.env.AGENT2TELEGRAM_DIR ? resolve(process.env.AGENT2TELEGRAM_DIR) : join(homedir(), ".agent2telegram");
+  return a2tHome();
 }
 
-function piAgentDir(): string {
-  return process.env.PI_CODING_AGENT_DIR ? resolve(process.env.PI_CODING_AGENT_DIR) : join(homedir(), ".pi", "agent");
+/** Pi's Telegram data, plus the pre-agent2telegram location while old Pis may still run there. */
+function piAgentDirs(): string[] {
+  const legacy = process.env.PI_CODING_AGENT_DIR ? resolve(process.env.PI_CODING_AGENT_DIR) : join(homedir(), ".pi", "agent");
+  return [...new Set([getAgentDir(), legacy])];
 }
 
 function alive(pid: number): boolean {
@@ -23,14 +27,16 @@ function alive(pid: number): boolean {
 
 /** A live Pi instance registered for this token in Pi's own runtime directory. */
 function piUsesToken(tokenHash: string, isAlive: (pid: number) => boolean): boolean {
-  const dir = join(piAgentDir(), "tg-runtime", tokenHash, "instances");
-  let names: string[];
-  try { names = readdirSync(dir); } catch { return false; }
-  return names.some(name => {
-    try {
-      const pid = (JSON.parse(readFileSync(join(dir, name), "utf8")) as { pid?: unknown }).pid;
-      return typeof pid === "number" && isAlive(pid);
-    } catch { return false; }
+  return piAgentDirs().some(root => {
+    const dir = join(root, "tg-runtime", tokenHash, "instances");
+    let names: string[];
+    try { names = readdirSync(dir); } catch { return false; }
+    return names.some(name => {
+      try {
+        const pid = (JSON.parse(readFileSync(join(dir, name), "utf8")) as { pid?: unknown }).pid;
+        return typeof pid === "number" && isAlive(pid);
+      } catch { return false; }
+    });
   });
 }
 

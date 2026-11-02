@@ -32,7 +32,8 @@ export type OpenRequest = {
   modDir?: string;
 };
 
-export type OpenResult = { ok: true; threadId?: number; notices: string[] } | { ok: false; reason: string };
+/** `quiet`: the directory is simply not enabled; the session stays idle without a notice. */
+export type OpenResult = { ok: true; threadId?: number; notices: string[] } | { ok: false; reason: string; quiet?: true };
 
 /** Commands shown in the group's "/" menu. */
 export const MENU_COMMANDS = [
@@ -55,6 +56,8 @@ export type GatewayDeps = {
   /** The old process's argv, so its flags survive a restart. */
   readArgv?: (pid: number) => string[] | undefined;
   isPidAlive?: (pid: number) => boolean;
+  /** Only enabled directories get a topic (`a2t enable claude`); all when left out. */
+  isEnabled?: (cwd: string) => boolean;
   now?: () => number;
   typingIntervalMs?: number;
 };
@@ -182,6 +185,9 @@ export class ClaudeGateway {
 
   async open(request: OpenRequest): Promise<OpenResult> {
     const cwd = resolve(request.cwd);
+    if (this.deps.isEnabled && !this.deps.isEnabled(cwd)) {
+      return { ok: false, quiet: true, reason: `此目录未开启 Telegram（在该目录运行 a2t enable claude）。` };
+    }
     for (const other of [...this.sessions.values()]) {
       if (other.connId === request.connId || other.cwd !== cwd) continue;
       const sameClaude = !!request.claudeSessionId && other.claudeSessionId === request.claudeSessionId;

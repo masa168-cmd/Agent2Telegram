@@ -8,6 +8,6 @@
     "sourceMap": false,
     "types": ["node"]
   },
-  "include": ["lib/claude/gateway/main.ts", "lib/claude/gateway/setup.ts", "lib/claude/gateway/restart-helper.ts"],
+  "include": ["lib/claude/gateway/main.ts", "lib/claude/gateway/restart-helper.ts", "lib/cli/main.ts", "lib/cli/migrate.ts"],
   "exclude": ["node_modules", "dist", "lib/**/__tests__/**"]
 }

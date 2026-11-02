@@ -17,7 +17,7 @@ afterEach(() => {
 });
 
 function setup(initial: TelegramConfig = { botToken: TOKEN, forumChatId: CHAT, allowedUserId: USER },
-  options: { dataDir?: string; alive?: (pid: number) => boolean } = {}) {
+  options: { dataDir?: string; alive?: (pid: number) => boolean; isEnabled?: (cwd: string) => boolean } = {}) {
   const dataDir = options.dataDir ?? mkdtempSync(join(tmpdir(), "claude-gateway-"));
   if (!options.dataDir) dirs.push(dataDir);
   let config: TelegramConfig = { ...initial };
@@ -50,6 +50,7 @@ function setup(initial: TelegramConfig = { botToken: TOKEN, forumChatId: CHAT, a
     startRestart,
     readArgv: () => ["/usr/bin/claude", "--permission-mode", "auto"],
     isPidAlive: options.alive ?? (() => true),
+    ...(options.isEnabled ? { isEnabled: options.isEnabled } : {}),
     typingIntervalMs: 1_000,
   });
   return { gateway, dataDir, sent, buttons, api, sendText, sendChatAction, editText, answerCallbackQuery, startRestart,
@@ -107,6 +108,13 @@ describe("ClaudeGateway sessions and topics", () => {
     const t = setup({ botToken: TOKEN, forumChatId: CHAT, pairingCode: "123456", pairingCodeExpiresAt: Date.now() + 60_000 });
     await t.gateway.handleUpdate(topicMessage("/pair 123456"));
     expect(t.getConfig().allowedUserId).toBeUndefined();
+  });
+
+  it("keeps a directory that is not enabled idle, without a topic", async () => {
+    const t = setup(undefined, { isEnabled: cwd => cwd === "/work/alpha" });
+    expect(await t.gateway.open({ connId: "x", cwd: "/work/beta" })).toMatchObject({ ok: false, quiet: true });
+    expect(await t.gateway.open({ connId: "y", cwd: "/work/alpha" })).toMatchObject({ ok: true, threadId: 77 });
+    expect(t.api).toHaveBeenCalledTimes(1);
   });
 
   it("allows one live session per directory", async () => {

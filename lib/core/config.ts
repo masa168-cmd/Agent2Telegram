@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { BotRecord, BotRegistry, ProjectTelegramBinding, ResolvedTelegramConfig, TelegramConfig, TelegramRenderLevel } from "./types.ts";
 import { log } from "./logger.ts";
 import { getAgentDir } from "./data-dir.ts";
@@ -110,26 +110,46 @@ export function findBotByIdOrName(registry: BotRegistry, query: string): BotReco
   return findBotById(registry, query) ?? findBotByName(registry, query);
 }
 
-// ── Project binding (.pi/telegram.json) read / write ──────────────────────
+// ── Project binding read / write ─────────────────────────────────────────
+// One file per bound directory, kept centrally under the data dir
+// (`projects/<hash of the directory>.json`, holding the directory itself) so
+// nothing is written into the project. Lookup walks up from the cwd, so a
+// binding made in a parent directory still covers its subdirectories.
+
+type StoredProjectBinding = ProjectTelegramBinding & { dir?: string };
+
+function projectBindingKey(dir: string): string {
+  return createHash("sha256").update(resolve(dir)).digest("hex").slice(0, 24);
+}
+
+/** The pre-agent2telegram location: still read until migrated, never written. */
+export function legacyProjectBindingPath(projectDir: string): string {
+  return join(resolve(projectDir), ".pi", "telegram.json");
+}
 
 /**
- * Walk up from `cwd` to find the nearest `.pi/telegram.json` file.
+ * Walk up from `cwd` to find the nearest bound directory.
  * Returns the parsed binding and its directory, or undefined if not found.
  */
 export async function readProjectBinding(cwd: string): Promise<{ path: string; binding: ProjectTelegramBinding } | undefined> {
   let dir = resolve(cwd);
   while (true) {
-    const bindingPath = join(dir, ".pi", "telegram.json");
+    // Central file first; a directory not migrated yet still has its old one.
+    const central = getProjectBindingPath(dir);
+    const bindingPath = existsSync(central) ? central : legacyProjectBindingPath(dir);
     if (existsSync(bindingPath)) {
       try {
         const raw = await readFile(bindingPath, "utf8");
-        const binding = JSON.parse(raw) as ProjectTelegramBinding;
-        const legacyTuiBridge = binding as ProjectTelegramBinding & { tuiBridge?: unknown };
-        if (legacyTuiBridge.tuiBridge !== undefined && !legacyTuiBridgeWarned) {
-          legacyTuiBridgeWarned = true;
-          configLog.warn("tuiBridge is no longer configurable; ignored");
+        const { dir: storedDir, ...binding } = JSON.parse(raw) as StoredProjectBinding;
+        // A hash collision cannot hand one directory another's binding.
+        if (storedDir === undefined || storedDir === dir) {
+          const legacyTuiBridge = binding as ProjectTelegramBinding & { tuiBridge?: unknown };
+          if (legacyTuiBridge.tuiBridge !== undefined && !legacyTuiBridgeWarned) {
+            legacyTuiBridgeWarned = true;
+            configLog.warn("tuiBridge is no longer configurable; ignored");
+          }
+          return { path: dir, binding };
         }
-        return { path: dir, binding };
       } catch {
         // Corrupt binding file — treat as not found so caller falls back to default.
         return undefined;
@@ -142,17 +162,18 @@ export async function readProjectBinding(cwd: string): Promise<{ path: string; b
   return undefined;
 }
 
-function getProjectBindingPath(projectDir: string): string {
-  return join(resolve(projectDir), ".pi", "telegram.json");
+/** Where a directory's binding is stored. */
+export function getProjectBindingPath(projectDir: string): string {
+  return join(getAgentDir(), "projects", `${projectBindingKey(projectDir)}.json`);
 }
 
 export async function writeProjectBinding(projectDir: string, binding: ProjectTelegramBinding): Promise<void> {
   const dir = resolve(projectDir);
-  const piDir = join(dir, ".pi");
-  await mkdir(piDir, { recursive: true });
   const path = getProjectBindingPath(dir);
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const tmpPath = `${path}.tmp`;
-  await writeFile(tmpPath, JSON.stringify(binding, null, 2) + "\n", { mode: 0o600 });
+  const { dir: _ignored, ...plain } = binding as StoredProjectBinding;
+  await writeFile(tmpPath, JSON.stringify({ dir, ...plain }, null, 2) + "\n", { mode: 0o600 });
   await rename(tmpPath, path);
   await chmod(path, 0o600).catch(configLog.swallow("warn", "chmod project binding failed", { path }));
 }
@@ -429,7 +450,7 @@ export type MigrationWarnings = { skippedPaths: string[] };
 
 /**
  * Migrate a v2 store (or legacy flat config) to a v3 registry.
- * For workspaces, writes per-project `.pi/telegram.json` files.
+ * For workspaces, writes per-project binding files.
  * Returns the v3 registry. Non-throwing for unwritable workspace paths.
  */
 async function migrateToV3(value: unknown): Promise<BotRegistry> {
@@ -477,7 +498,7 @@ async function migrateToV3(value: unknown): Promise<BotRegistry> {
       }
     }
 
-    // Migrate workspaces → project .pi/telegram.json files.
+    // Migrate workspaces → project binding files.
     for (const workspace of store.workspaces ?? []) {
       if (!workspace.config?.botToken) continue;
       const wsPath = resolve(workspace.path);
@@ -490,7 +511,7 @@ async function migrateToV3(value: unknown): Promise<BotRegistry> {
         bots.push(bot);
       }
 
-      // Write project .pi/telegram.json — skip if path doesn't exist or isn't writable.
+      // Write the project binding — skip if the path doesn't exist or isn't writable.
       try {
         if (!existsSync(wsPath)) {
           warnings.skippedPaths.push(wsPath);
@@ -519,7 +540,7 @@ async function migrateToV3(value: unknown): Promise<BotRegistry> {
     return { version: 3, bots, ...(defaultBotId === undefined ? {} : { defaultBotId }) };
   }
 
-  throw new Error("Unsupported Telegram config format. Please recreate ~/.pi/agent/tg.json as version 3 or add a bot via /tg → Bots → Add bot.");
+  throw new Error("Unsupported Telegram config format. Please recreate ~/.agent2telegram/pi/tg.json as version 3 or add a bot via /tg → Bots → Add bot.");
 }
 
 function createBotRecordFromConfig(config: TelegramConfig, name: string): BotRecord {

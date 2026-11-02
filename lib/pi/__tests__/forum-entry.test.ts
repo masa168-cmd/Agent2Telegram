@@ -26,9 +26,9 @@ let sequence = 0; let cleanup: (() => Promise<void>) | undefined;
 afterEach(async () => { await cleanup?.(); cleanup = undefined; vi.restoreAllMocks(); vi.unstubAllGlobals(); mock.session = undefined; });
 async function setup(options: { unpaired?: boolean } = {}) {
   const root = await mkdtemp(join(tmpdir(), "forum-entry-")); const cwd = join(root, "work");
-  await mkdir(cwd); const oldAgentDir = process.env.PI_CODING_AGENT_DIR; const oldCache = process.env.XDG_CACHE_HOME;
+  await mkdir(cwd); const oldAgentDir = process.env.PI_CODING_AGENT_DIR; const oldCache = process.env.AGENT2TELEGRAM_DIR;
   process.env.PI_CODING_AGENT_DIR = join(root, "agent");
-  process.env.XDG_CACHE_HOME = join(root, "cache"); const uploads = join(root, "cache", "pi-telegram", "uploads", "work");
+  process.env.AGENT2TELEGRAM_DIR = join(root, "a2t"); const uploads = join(root, "a2t", "cache", "uploads", "work");
   const token = `${50000 + ++sequence}:fake-offline`; const botId = "test";
   const bot = { id: botId, name: "Offline only", token, ...(options.unpaired ? {} : { allowedUserId: 7 }),
     forumChatId: -100123, botUsername: "offline_bot", apiBase: "http://127.0.0.1:1" };
@@ -98,7 +98,7 @@ async function setup(options: { unpaired?: boolean } = {}) {
     if (!stopped) { stopped = true; await emit("session_shutdown", { type: "session_shutdown" }); }
     await new Promise(resolve => setTimeout(resolve, 30));
     if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
-    if (oldCache === undefined) delete process.env.XDG_CACHE_HOME; else process.env.XDG_CACHE_HOME = oldCache;
+    if (oldCache === undefined) delete process.env.AGENT2TELEGRAM_DIR; else process.env.AGENT2TELEGRAM_DIR = oldCache;
     await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   };
   extension(pi);

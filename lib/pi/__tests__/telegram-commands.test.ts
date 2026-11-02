@@ -1,6 +1,6 @@
 import { mkdtemp, mkdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock telegram-api to avoid real network calls.
@@ -34,7 +34,7 @@ import {
   updateBotFlow,
   type TelegramCommandDeps,
 } from "../commands/telegram-commands.ts";
-import { readBotRegistry, readProjectBinding, addBot, clearDefaultBot, readResolvedTelegramConfig, enableConfiguredTelegramOnStartup } from "../../core/config.ts";
+import { getProjectBindingPath, readBotRegistry, readProjectBinding, addBot, clearDefaultBot, readResolvedTelegramConfig, enableConfiguredTelegramOnStartup } from "../../core/config.ts";
 import type { BotRecord, ResolvedTelegramConfig, TelegramConfig } from "../../core/types.ts";
 import type * as pairingModule from "../../core/pairing.ts";
 
@@ -396,8 +396,8 @@ describe("Telegram management flows (bot registry + project binding)", () => {
     await disableProjectFlow(ctx.ui, deps, projectDir);
 
     // Durable disconnect record: no botId (still means "default bot").
-    const raw = await readFile(join(projectDir, ".pi", "telegram.json"), "utf8");
-    expect(JSON.parse(raw)).toEqual({ enabled: false });
+    const raw = await readFile(getProjectBindingPath(projectDir), "utf8");
+    expect(JSON.parse(raw)).toEqual({ dir: resolve(projectDir), enabled: false });
 
     // Re-reading the resolved config keeps disabled + default bot.
     const resolved = await readResolvedTelegramConfig(projectDir);
@@ -416,7 +416,7 @@ describe("Telegram management flows (bot registry + project binding)", () => {
 
     await disableProjectFlow(ctx.ui, deps, projectDir);
 
-    const raw = await readFile(join(projectDir, ".pi", "telegram.json"), "utf8");
+    const raw = await readFile(getProjectBindingPath(projectDir), "utf8");
     const binding = JSON.parse(raw);
     expect(binding.enabled).toBe(false);
     expect(binding.botId).toBe(bot.id);

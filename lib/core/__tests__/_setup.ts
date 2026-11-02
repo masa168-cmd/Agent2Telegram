@@ -12,8 +12,15 @@
  * beforeEach, which runs after this global hook and re-enables logging into a
  * per-test temp directory.
  */
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach } from "vitest";
 import { initLogger } from "../logger.ts";
+
+// Never let a test reach the real ~/.agent2telegram (or the legacy ~/.pi/agent):
+// every test file gets its own data home unless it sets one itself.
+process.env.AGENT2TELEGRAM_DIR ??= mkdtempSync(join(tmpdir(), "a2t-test-home-"));
 
 beforeEach(() => {
   initLogger({ enabled: false });

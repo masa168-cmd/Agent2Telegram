@@ -1,0 +1,11 @@
+{
+  "name": "agent2telegram",
+  "owner": { "name": "masa168-cmd" },
+  "plugins": [
+    {
+      "name": "agent2telegram",
+      "source": "./lib/claude/mod",
+      "description": "Mirror Claude Code sessions to Telegram forum topics (one topic per directory)."
+    }
+  ]
+}

@@ -79,44 +79,47 @@ mods 提供的相关能力（2.1.316 自带类型定义 `claude-code.d.ts` 与 `
 
 ## 4. 架构方案
 
-### 4.1 进程模型
+### 4.1 进程模型（4b 起：一个网关服务所有 Agent）
 
-- 每个 Agent 一个 Bot、一个论坛群，互不影响；**不需要跨 Agent 的总网关**。
-- 同一个 Agent 在多个目录运行时，共用这个 Agent 的 Bot，仍需要「一个进程接收消息，再按话题分发」。
-  - Pi：沿用 `instance-coordinator`。
-  - Codex：所有会话都在同一个常驻 app-server 里，用**一个常驻 bridge 进程**连接 app-server，按 thread 的 `cwd` 对应话题即可，不需要选主。
-  - Claude Code（阶段 4a 实现）：**每个 Bot 一个常驻网关**（`lib/claude/gateway/`，systemd --user 服务 `agent2telegram-claude`（安装时生成），需 linger），它是该 Bot 唯一的拉取者，按启动目录建话题、按话题把消息分给会话。每个会话的 mod 经 Unix socket `~/.agent2telegram/claude/gateway.sock` 直连网关：登记（`/open`，带 mod 每次加载生成的连接编号、目录、Claude 会话 ID、进程号、tmux 窗格）→ 反复挂起 20 秒取消息（`/poll`）→ 退出时注销（`/close`，`/clear` 不注销）。在线判断全在网关内存：取消息超时 60 秒或进程已不存在即移除；不用心跳文件、不用选主，自己的进程之间不会出现 409。同一目录同时只接一个会话；只有 `a2t enable claude` 开启过的目录（含子目录）才登记成功，其余会话静默空闲。/clear、/resume 不注销，每次 session.start 重新登记。网关重启后会话自动重新登记（实测 2 秒内）。`/restart` 由网关起辅助程序（不在 Claude Code 进程树里），读 `/proc/<pid>/cmdline` 保留原参数，向同一 tmux 窗格输入 `claude … --resume <会话 ID>`。
-  - 选型理由（11-02 与用户确认）：照搬 Pi 的文件锁选主要把复杂的交接逻辑再写一遍，交接慢且交接期会有 409；网关常驻约 26–95 MB、CPU 近零，会话不再各起一个约 95 MB 的 sidecar。Pi 暂不迁移，4b 再评估。
-  - 代码：`lib/claude/mod/`（插件名 `agent2telegram`）与 `lib/claude/gateway/`；数据目录 `~/.agent2telegram/claude/`；以本地插件市场（app 目录）正式安装到 Claude Code（user 范围），不再需要开发期别名 `ctg`。
+- 每个 Agent 一个 Bot、一个论坛群，互不影响；同一个 Agent 在多个目录运行时共用这个 Bot，每个目录一个话题。
+- **一个常驻网关进程** `lib/gateway/main.ts`（systemd --user 服务 `agent2telegram-gateway`，需 linger）为每个已配置的 Agent 各开一个收件循环和一个 Unix socket `<该 Agent 数据目录>/gateway.sock`。它是各 Bot 唯一的拉取者，按启动目录建话题、按话题把消息分给在线会话；话题对照表与收件游标按 Agent 分开保存（Pi：`pi/tg-runtime/<tokenHash>/`；Claude：`claude/runtime/`）。
+- 会话与网关的协议（即 4b 定型的「适配器接口」，见 4.4）：登记 `/open`（连接编号、目录、会话 ID、进程号、tmux 窗格）→ 反复挂起 20 秒取消息 `/poll` → 退出注销 `/close`。在线判断全在网关内存：取消息超时 60 秒或进程已不存在即移除；同一目录只接一个会话，同一会话重新登记会顶替旧连接；网关重启后会话自动重新登记。不用心跳文件、不用选主，自己的进程之间不会出现 409。
+- 两种接入方式（`BotGateway` 的 `mode`）：
+  - **thin（Claude Code）**：网关解析消息与按钮，向会话发 `prompt / abort / command / usage / restart` 等事件；回复、审批、选择框经 `/turn-complete`、`/prompt`、`/wait` 等由网关代发。只有 `a2t enable claude` 开启过的目录才登记成功。`/restart` 由网关起辅助程序，读 `/proc/<pid>/cmdline` 保留原参数，向同一 tmux 窗格输入 `claude … --resume <会话 ID>`。
+  - **rich（Pi）**：网关只校验群与用户，把话题内的原始 update 原样交给 Pi（`{type:"update"}`），Pi 沿用原有处理并**自己直接发送**；按钮回调按话题或 Pi 上报的按钮消息 ID 路由。私聊只用于配对（`/pair`），由网关统一处理。
+- Codex（阶段 5）：所有会话都在同一个常驻 app-server 里，预计由网关连接 app-server，按 thread 的 `cwd` 对应话题。
+- 选型理由（11-02 与用户确认）：文件锁选主要写复杂的交接逻辑，交接慢且交接期会有 409；网关常驻约 26–95 MB、空闲时 CPU 近零。4b 把 Pi 从「实例间选主 + 本机转发」改为接入同一网关，删除了 `instance-coordinator`、`forum-router`、`polling`、历史回放与 Pi 私聊模式。
+- 代码：`lib/gateway/`（通用网关）、`lib/claude/mod/`（Claude 插件 `agent2telegram`）、`lib/pi/gateway-client.ts` 与 `lib/pi/forum-session.ts`（Pi 客户端）。
 
 ### 4.2 安装与目录（2026-11-02 实现）
 
-- 一行安装或升级：`curl -fsSL https://raw.githubusercontent.com/masa168-cmd/Agent2Telegram/main/install.sh | bash`。脚本下载源码到暂存目录，`npm ci` 并编译（`npm run build:claude`），原子替换 `~/.agent2telegram/app`，链接 `~/.local/bin/a2t`，再交给 `a2t post-install`（Claude 插件、网关服务）。不经手 Token。`A2T_SOURCE` 可从本地源码安装，`A2T_SKIP_SYSTEMD=1` 跳过服务（沙盒测试用，systemd --user 按用户而非 HOME 生效）。
-- 全部配置与数据集中在 `~/.agent2telegram/`（`$AGENT2TELEGRAM_DIR` 可改）：`app/`、`bin/`、`bots/`（Bot 归属）、`pi/`（tg.json、tg-runtime、`projects/<目录哈希>.json` 目录绑定、logs）、`claude/`（tg.json、runtime、projects.json 已开启目录、gateway.sock）、`cache/`（附件）、`backup/`。Pi 自己的会话仍在 `~/.pi/agent`。
+- 一行安装或升级：`curl -fsSL https://raw.githubusercontent.com/masa168-cmd/Agent2Telegram/main/install.sh | bash`。脚本下载源码到暂存目录，`npm ci` 并编译（`npm run build:claude`），原子替换 `~/.agent2telegram/app`，链接 `~/.local/bin/a2t`，再交给 `a2t post-install`（Claude 插件、网关服务 `agent2telegram-gateway`，并移除旧服务 `agent2telegram-claude`、`claude-telegram-gateway`）。不经手 Token。`A2T_SOURCE` 可从本地源码安装，`A2T_SKIP_SYSTEMD=1` 跳过服务（沙盒测试用，systemd --user 按用户而非 HOME 生效）。
+- 全部配置与数据集中在 `~/.agent2telegram/`（`$AGENT2TELEGRAM_DIR` 可改）：`app/`、`bin/`、`bots/`（Bot 归属）、`pi/`（tg.json、tg-runtime、`projects/<目录哈希>.json` 目录绑定、logs、gateway.sock）、`claude/`（tg.json、runtime、projects.json 已开启目录、gateway.sock）、`cache/`（附件）、`backup/`。Pi 自己的会话仍在 `~/.pi/agent`。
 - Pi 数据目录优先级：显式 `PI_CODING_AGENT_DIR` > `$AGENT2TELEGRAM_DIR/pi` > `~/.agent2telegram/pi`；未迁移时若只有旧 `~/.pi/agent/tg.json` 则继续用旧目录，目录绑定也先读新位置、再读旧 `.pi/telegram.json`，只写新位置，保证升级不掉线。
 - `a2t`：`status`、`setup <pi|claude>`（终端交互，从 /dev/tty 读）、`enable|disable <pi|claude> [目录]`、`gateway <restart|status|logs>`、`migrate [--apply]`（先列清单；Pi 或网关在运行时拒绝；tar 备份；不覆盖；主目录旧入口等列为待定）、`uninstall`（保留数据）。
-- 宿主只认固定位置的入口保留为指向 app 的链接或一行入口：Pi 的 `.pi/extensions/agent2telegram.ts`、Claude 插件登记、`~/.config/systemd/user/agent2telegram-claude.service`、`~/.local/bin/a2t`。
+- 宿主只认固定位置的入口保留为指向 app 的链接或一行入口：Pi 的 `.pi/extensions/agent2telegram.ts`、Claude 插件登记、`~/.config/systemd/user/agent2telegram-gateway.service`、`~/.local/bin/a2t`。
 - 包名、插件名统一为 `agent2telegram`；会话记录里的内部类型名（如 `pi-telegram-plus-ex.forum-binding`）保持不变，以便读取旧记录。
 
 ### 4.3 代码分层
 
 ```text
 telegram-core/          与 Agent 无关
-  telegram-api, polling, markdown, text-split, rich-message,
-  forum-router, forum-transport, forum-session（话题对照表）,
-  instance-coordinator, pairing, config（路径可配置）, logger,
+  telegram-api, markdown, text-split, rich-message,
+  forum-transport, forum-binding, pairing, config（路径可配置）, logger,
   heartbeat, callback-protocol, menu 键盘, attachments 收发
-agent-adapter 接口       见 4.3
+gateway/                网关（4b：polling、话题、路由都在这里），接口见 4.4
 adapters/pi/            现有 session-capture、tui/、命令、renderer 的 Pi 部分
 adapters/codex/         app-server 客户端 + 事件映射 + 命令映射
 adapters/claude/        mod（钩子模块）+ 常驻网关（Node，systemd --user）
 ```
 
-阶段 1 已完成第一步拆分：`lib/core/`（与 Agent 无关，24 个源文件；`core-boundary.test.ts` 禁止它引用 Pi 包或 `lib/core` 以外的文件）和 `lib/pi/`（Pi 专用，含 `tui/`、`commands/`、`context-budget/`）。数据目录统一由 `lib/core/data-dir.ts` 提供，Pi 默认仍是 `~/.pi/agent`。`forum-session`、`forum-transport`、`history-replay`、`menu-commands`、`attachments` 仍有 Pi 依赖，留在 `lib/pi/`，阶段 4 定型接口时再拆。
+阶段 1 已完成第一步拆分：`lib/core/`（与 Agent 无关，24 个源文件；`core-boundary.test.ts` 禁止它引用 Pi 包或 `lib/core` 以外的文件）和 `lib/pi/`（Pi 专用，含 `tui/`、`commands/`、`context-budget/`）。数据目录统一由 `lib/core/data-dir.ts` 提供，Pi 默认仍是 `~/.pi/agent`。`forum-session`、`forum-transport`、`menu-commands`、`attachments` 仍有 Pi 依赖，留在 `lib/pi/`。4b 新增 `lib/gateway/`，原 `lib/claude/gateway/` 移入。
 
 拆分前的调查结论：`lib/` 顶层约 26 个文件、4,500 行不直接依赖 Pi，是 `telegram-core` 的候选。但其中 `config.ts` 写死了 `~/.pi/agent`，`forum-policy.ts` 引用了 Pi 的对话框模型，需要先改。`controller.ts`（1,882 行）同时负责消息路由、命令分发和 Pi 界面路由，是拆分的主要工作量。`lib/context-budget/` 与 Telegram 无关，应移出。
 
-### 4.4 适配器接口草案
+### 4.4 适配器接口
+
+4b 定型（11-02）：**接口就是 4.1 的网关 socket 协议**，不再做进程内的 `AgentAdapter` 抽象。thin 接入用网关解析好的事件，rich 接入拿原始 update 自己处理，新 Agent 按能力选一种。以下为最初草案，仅作对照：
 
 ```ts
 interface AgentAdapter {
@@ -141,7 +144,6 @@ interface AgentAdapter {
 }
 ```
 
-接口只在第二个适配器（Claude Code）落地时一起定型，避免只凭 Pi 一家抽象。
 
 ## 5. 配对与授权
 
@@ -154,13 +156,14 @@ interface AgentAdapter {
 按风险从高到低：
 
 1. 依赖 Pi 内部实现（`session-capture` 替换退出处理、`tui/` 读组件内部字段）。拆分改变不了，靠契约测试和版本检查兜底。
-2. 一个 Bot 只给一个 Agent 用。**Claude 侧已实现（4a）**：网关启动时在 `~/.agent2telegram/bots/<token 哈希>.json` 登记归属，归属其他 Agent 或 Pi 运行目录里有存活实例在用这个 Bot 时拒绝接入；网关是唯一拉取者，第一次 409 视为交接 5 秒后重试，持续冲突则通知各会话并每分钟重试。**Pi 侧尚未登记与检查**，放到 4b。
+2. 一个 Bot 只给一个 Agent 用。**Claude 侧已实现（4a）**：网关启动时在 `~/.agent2telegram/bots/<token 哈希>.json` 登记归属，归属其他 Agent 或 Pi 运行目录里有存活实例在用这个 Bot 时拒绝接入；网关是唯一拉取者，第一次 409 视为交接 5 秒后重试，持续冲突则通知各会话并每分钟重试。4b 起网关对每个 Agent 都做同样的登记与检查（Pi 也一样）。
 3. `controller.ts` 职责混杂。
 4. ~~路径写死~~：已解决（打包与安装）。入口由 `a2t enable` 生成并指向安装目录，配置集中到 `~/.agent2telegram/`。
 5. `context-budget` 放在 tg 插件里。
-6. 关闭功能用的常量 `PROCESS_MESSAGES_ENABLED`、`STREAM_PREVIEW_ENABLED`，旧代码仍在，应改成配置项或删除。
+6. 关闭功能用的常量 `PROCESS_MESSAGES_ENABLED`、`STREAM_PREVIEW_ENABLED`，旧代码仍在。4b 调查发现预览记录还承担「最终答案发送租约」，删除需先补专门测试，暂缓。
 7. 界面中英文混用。
-8. 遗留：`scripts/e2e/run-e2e-commands.mjs` 已改为检查 Telegram 拒绝 `/quit`、`/exit`（该脚本需真实 Pi，未运行）。`forum-multiprocess.test.ts` 偶发失败的主因是高负载下子进程启动时现场编译 TypeScript 超过 8 秒，已放宽到 30 秒并给跨进程等待显式 10 秒；高负载下 10 次中仍失败 1 次、未复现出细节，疑与多实例心跳时序有关，待 4b 处理。
+8. 遗留：`scripts/e2e/run-e2e-commands.mjs` 已改为检查 Telegram 拒绝 `/quit`、`/exit`（该脚本需真实 Pi，未运行）。`forum-multiprocess.test.ts` 随 4b 删除多实例选主一并删除。
+9. 4b 遗留：Pi 话题被关闭或删除时不再自动重开或新建（原由 Pi 的路由处理，现在 Pi 直接发送、网关未接手）；Pi 目录绑定里旧的 `botId` 仍被读取，若与默认 Bot 不同会和网关不一致（本机只有一个 Bot，不受影响）。
 
 ## 7. 分阶段计划（每阶段单独确认）
 
@@ -171,7 +174,7 @@ interface AgentAdapter {
 | 2 | Claude Code 最小原型：mod + sidecar，单目录、单话题，完成发任务、最终答案、中断、正在输入 | **已完成**（a1954ca；sidecar 已在 4a 由网关取代） |
 | 3 | Claude Code 补齐审批、命令、选择框（先答先得）、`/restart` | **已完成**（真机验收） |
 | 4a | Claude Code 多目录共用 Bot：常驻网关（systemd --user）、mod 直连网关、Bot 归属登记与 409 处理 | **已完成**（11-02 真机两目录验收） |
-| 4b | 定型 `AgentAdapter` 接口（Pi + Claude Code），Pi 改为实现该接口；Pi 侧 Bot 归属；评估 Pi 迁到网关 | 两个 Agent 都通过离线测试与真机验收 |
+| 4b | Pi 接入同一网关（rich），一个网关进程服务所有 Agent；接口定为网关协议；删除 Pi 选主、本机转发、历史回放、私聊模式 | **已完成**（11-02 本机切换，Pi 与 Claude 真机收发、`/restart` 通过） |
 | 5 | Codex 适配器 | 用 Codex 专用 Bot 和新群真机验收 |
 | P | 打包与安装（提前于 4b 完成）：`~/.agent2telegram/`、`a2t`、`install.sh`、数据迁移、改名 agent2telegram、迁入 `~/plugins/Agent2Telegram` 并推送 | **已完成**（11-02 本机切换与一行安装真机验收） |
 | 6 | 拆成独立包（core / pi / codex / claude） | 发布前另行确认 |

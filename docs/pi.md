@@ -1,15 +1,15 @@
 # Pi 详细说明
 
-Agent2Telegram 的 Pi 部分：面向 **Pi coding agent 1.4.0** 的 Telegram 扩展，**一个 Bot，每个 Pi 启动目录一个论坛话题**。以 [pi-telegram-plus](https://github.com/jalyfeng/pi-telegram-plus/tree/50d39ff9b2e0ad60d165920956a5bd92ff078891) 为主体，补充会话绑定和本机多实例路由，保留命令、交互、文件与输出能力。安装、配置与按目录开启见 [README](../README.md)。
+Agent2Telegram 的 Pi 部分：面向 **Pi coding agent 1.4.0** 的 Telegram 扩展，**一个 Bot，每个 Pi 启动目录一个论坛话题**。以 [pi-telegram-plus](https://github.com/jalyfeng/pi-telegram-plus/tree/50d39ff9b2e0ad60d165920956a5bd92ff078891) 为主体，补充会话绑定和多目录路由（经常驻网关），保留命令、交互、文件与输出能力。安装、配置与按目录开启见 [README](../README.md)。
 
 ## 能做什么
 
-- **只控制在线 Pi**：一个实例收取 Bot 更新，按话题交给对应的本机 Pi；每个在线实例可独立向自己的话题发送结果。收件者退出后由其他在线实例接管。
+- **只控制在线 Pi**：常驻网关 `agent2telegram-gateway` 是 Bot 唯一的收件者，按话题把原始消息交给对应目录的在线 Pi；Pi 自己处理并直接向自己的话题发送结果。Pi 退出后，该话题的消息只收到「没有在线的 Pi 会话」提示。
 - **日常遥控**：普通提示词、模型/思考量、状态、停止、压缩、会话导航等，沿用 plus 的命令网关和宿主命令。实际可用项目取决于 Pi 的命令目录与可识别界面。命令缺少必填的固定选项时，Telegram 会显示交互菜单；缺少自定义文本时，现有命令会要求输入；显式提供参数则直接执行。
 - **交互**：结构化选择、确认、输入及已识别的审批；非敏感本地弹窗也可在手机回答，本地和手机先回答的一方生效。
 - **回复发送**：Telegram 不显示「🤖 正在输出…」流式预览（输出时无法判断后面是否还有工具调用，中间说明会一闪而过）；每段回复结束后，最终答案作为完整格式化消息发出，长结果分片发送。任务进行中由 Telegram「正在输入…」状态表示仍在工作，也可发 `/status` 查看 `state`。Telegram 默认不显示「⚙️ 过程」思考/工具进度合并消息；明确的工具失败和 `full` 模式工具结果仍可显示。
 - **文件与图片**：手机发来的附件存入缓存目录 `~/.agent2telegram/cache/uploads/<启动目录名>/`（不写入项目目录，不自动清理），使用清理后的随机文件名、不覆盖已有文件；模型的附件工具、图片、代码文件及 typing 都固定到绑定话题。编辑/删除仅允许本代次登记的 Bot 消息。
-- **在线会话列表**：`/tg` → `🧵 Online sessions` 给出各在线话题链接；这是切换聊天位置，不是抢占收件者，也不搬运历史。
+- **在线会话列表**：`/tg` → `🧵 Online sessions` 给出各在线话题链接；只是跳到对应话题，不搬运历史。
 - **上下文预算**：`/context-budget` 为当前目录的多个聊天模型分别配置窗口与压缩阈值；SSH 与 Telegram 共用标准菜单，实际值可单独查询。依赖下述 Pi 1.4.0 实例级兼容适配，真实加载/手机验收另行进行。
 
 这不是 Pi 进程管理器：**不启动离线会话、不守护或重启 Pi、不建立 SSH/tmux 环境**。启动故障、凭据和应急维护通过手机 SSH 处理。
@@ -24,11 +24,9 @@ Agent2Telegram 的 Pi 部分：面向 **Pi coding agent 1.4.0** 的 Telegram 扩
 | 话题名 | 相对 home 的路径（home 本身为 `~`，home 外为绝对路径），最长 128 字符 |
 | tree / compact | 不换话题；绑定读取全部 custom entries，不只当前分支 |
 | 同一目录再启动第二个 Pi | 第二个不接入 Telegram，只能在 SSH 中使用 |
-| 同会话或同群/话题被另一在线实例占用 | 拒绝重复占用，不猜测控制目标 |
 | General、未知话题、错误群/用户、过期按钮 | 不交给 Pi；必要时仅在原处提示拒绝 |
-| 话题已关闭 | 自动重开并沿用 |
-| 话题已删除（Telegram 明确返回） | 自动新建一次并更新对照表 |
-| 创建请求结果未知、对照表损坏 | 停止接入，要求先查 Telegram，再在 SSH 中 `/tg-forum retry`，不自动重试 |
+| 话题已关闭或已删除 | 暂不自动处理（已知限制）：关闭的话题在 Telegram 里重新打开即可；删除的话题需从对照表删掉该目录一行，再 `a2t gateway restart` 并重启 Pi |
+| 建话题失败 | Pi 终端显示原因，过一会儿自动重新登记 |
 
 **旧绑定迁移**：旧版本写在会话里的 `pi-telegram-plus-ex.forum-binding` 只在该目录还没有对照记录时用一次，作为初始话题；新版本不再写入会话。
 
@@ -39,8 +37,8 @@ Agent2Telegram 的 Pi 部分：面向 **Pi coding agent 1.4.0** 的 Telegram 扩
 1. Node.js `>=22.19.0`；目标 Pi **1.4.0**。本次离线检查使用 Node 22.22.1。保留的 OMP 适配不等于本 fork 已支持/验收 OMP。
 2. **本人和 Bot 的私密超级群，启用 Topics**。Bot 必须能发送文本/附件，并有管理话题的权限以创建、重开话题。确认普通文本和文件也能收到，不只 slash 命令。
 3. 用真实个人账户发消息；匿名管理员、代频道发言和其他 Bot 不作为授权用户。
-4. 同一 Token 的全部在线 Pi 必须使用本扩展的相同兼容版本，并共享当前用户的 agent 目录。**不能同时装载原 plus、mux，或运行其他 getUpdates/webhook 消费者**。
-5. 本机心跳/路由目录必须只有当前系统用户可访问；IPC 只监听 `127.0.0.1`，随机 capability 放在私有心跳文件，不通过 Telegram 展示。不要开放端口、共享该目录或跨不信任用户复用。
+4. Bot 只由网关收取：**不能同时装载原 plus、mux，或运行其他 getUpdates/webhook 消费者**；网关遇到 409 会暂停并重试。
+5. Pi 与网关之间只走 Unix socket `~/.agent2telegram/pi/gateway.sock`（权限 600），不开网络端口。
 
 **白名单只限制谁能操作，不限制谁能看群消息。** 其他群成员仍能读回复、附件和历史。Pi 扩展有宿主进程权限；这不是工具沙箱，也不新增通用工具授权体系。
 
@@ -59,7 +57,7 @@ Agent2Telegram 的 Pi 部分：面向 **Pi coding agent 1.4.0** 的 Telegram 扩
 
 ### Bot 注册表
 
-沿用 plus 的 `tg.json` 格式，位置是 `~/.agent2telegram/pi/tg.json`（显式设置 `PI_CODING_AGENT_DIR` 时用该目录；旧版的 `~/.pi/agent/tg.json` 在 `a2t migrate` 之前仍会被读取）。论坛模式下，Telegram 话题的 `/tg` 不显示全局 Bot/项目维护入口；请在 **SSH 中的 `/tg` → Bots/Project** 录入、替换和绑定，或在 SSH 编辑器内更新相应记录。`forumChatId` 可通过本地 Bots 的更新字段设置；关闭论坛模式用 `off`。
+沿用 plus 的 `tg.json` 格式，位置是 `~/.agent2telegram/pi/tg.json`（显式设置 `PI_CODING_AGENT_DIR` 时用该目录；旧版的 `~/.pi/agent/tg.json` 在 `a2t migrate` 之前仍会被读取）。论坛模式下，Telegram 话题的 `/tg` 不显示全局 Bot/项目维护入口；请用 `a2t setup pi` 或 **SSH 中的 `/tg` → Bots** 录入和替换。每个 Agent 只用注册表里的默认 Bot（网关收的就是它），`/tg` → Project 不再选 Bot。`forumChatId` 可通过本地 Bots 的更新字段设置；关闭论坛模式用 `off`。
 
 示例仅展示格式，尖括号必须在 SSH 中替换；不要提交文件或在聊天里发送 Token：
 
@@ -78,22 +76,21 @@ Agent2Telegram 的 Pi 部分：面向 **Pi coding agent 1.4.0** 的 Telegram 扩
 }
 ```
 
-论坛模式要求已设置有效 `allowedUserId` 和负安全整数 `forumChatId`，不接受最近一次聊天 ID 作为群配置，也不在群里进行首次凭据/操作者配对。已有未配对 Bot 可先按上游私聊配对流程完成，再在 SSH 配置固定论坛群。无效论坛配置会关闭控制，不退回私聊兜底。
+论坛模式要求已设置有效 `allowedUserId` 和负安全整数 `forumChatId`，不接受最近一次聊天 ID 作为群配置，也不在群里进行首次凭据/操作者配对。未配对时私聊 Bot 发 `/pair <配对码>`（由网关处理）。私聊不能操作 Pi；没有有效论坛配置时 Pi 不接入 Telegram。
 
-目录绑定（用哪个 Bot、显示偏好、消息位置）集中存放在 `~/.agent2telegram/pi/projects/<目录哈希>.json`，内容形如：
+目录绑定（是否开启、显示偏好）集中存放在 `~/.agent2telegram/pi/projects/<目录哈希>.json`，内容形如：
 
 ```json
-{ "dir": "/home/me/project", "botId": "personal", "enabled": true, "tool": "brief", "thinking": "brief", "retryCount": 3 }
+{ "dir": "/home/me/project", "enabled": true, "tool": "brief", "retryCount": 3 }
 ```
 
-Bot 身份/群/操作者保存在注册表；项目偏好与游标保存在项目绑定，**不得提交这些运行时文件**。没有 `forumChatId` 时保留原 plus 私聊路径，而不是论坛模式。
+Bot 身份/群/操作者保存在注册表；项目偏好保存在项目绑定；收件游标由网关保存在 `tg-runtime/<tokenHash>/cursor.json`。**不得提交这些运行时文件**。
 
 ### 故障恢复
 
-- SSH 中 `/tg-forum`：查看当前话题链接或错误。
-- 创建结果未知：先在 Telegram 检查是否已建成话题，再在 SSH 用 `/tg-forum retry` 并确认。已删除的话题会自动新建一次，无需 retry。可能留下孤立话题；插件不删历史。已有有效话题不能用 retry 强制替换。
-- “本机转发结果未确认”：先查该话题和 Pi 状态，**不要自动重发**。IPC ACK 仅表示已接纳，不表示模型任务已完成。
-- “更新游标无法保存，本条指令未执行”：先用 SSH 检查目录权限与日志，再明确重新提交。游标先保存、指令后交接，崩溃仍可能出现已消费但未执行；不承诺持久化 exactly-once 或必达。
+- SSH 中 `/tg-forum`：查看当前话题链接或错误；`a2t status` 看网关与在线会话；`a2t gateway logs` 看网关日志。
+- 网关未运行时 Pi 每 3 秒重试，网关恢复后自动重新登记，无需重启 Pi。
+- Pi 离线期间发到话题的消息不会补交，Pi 上线后请重新发送。
 - 离线话题不会唤醒 Pi；手机 SSH 启动/恢复对应 Pi 后才重新上线。
 
 ## 上下文预算（Pi 1.4.0）

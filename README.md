@@ -6,7 +6,7 @@
 
 | Agent | 状态 | 接入方式 |
 | --- | --- | --- |
-| [Pi coding agent](https://pi.dev) 1.4.0 | 可用 | Pi 扩展（在 Pi 进程内） |
+| [Pi coding agent](https://pi.dev) 1.4.0 | 可用 | Pi 扩展 + 常驻网关 |
 | [Claude Code](https://code.claude.com) 2.1.316+ | 可用 | Claude Code 插件（mod）+ 常驻网关 |
 | Codex | 计划中 | — |
 
@@ -22,7 +22,8 @@ curl -fsSL https://raw.githubusercontent.com/masa168-cmd/Agent2Telegram/main/ins
 
 - 把程序装到 `~/.agent2telegram/app`，在本机安装依赖并编译；
 - 建立命令 `a2t`（`~/.local/bin/a2t`）；
-- Claude Code：把插件装成本地插件（直接从 `~/.agent2telegram/app` 读取），并安装用户级 systemd 服务 `agent2telegram-claude`（网关）。
+- Claude Code：把插件装成本地插件（直接从 `~/.agent2telegram/app` 读取）；
+- 安装用户级 systemd 服务 `agent2telegram-gateway`：一个常驻网关，替所有 Agent 的 Bot 收消息，再按话题分给对应会话（旧版本的 `agent2telegram-claude` 服务会被替换）。
 
 **脚本不会询问或保存 Bot Token。** 重复运行同一条命令即是升级，配置和数据不受影响。
 
@@ -40,7 +41,7 @@ curl -fsSL https://raw.githubusercontent.com/masa168-cmd/Agent2Telegram/main/ins
 
    需要填：Bot Token、论坛群 ID（以 `-100` 开头：复制群里任意消息的链接 `t.me/c/<数字>/…`，在 `<数字>` 前加 `-100`）、你的 Telegram 用户 ID（可留空，留空则按提示私聊 Bot 发 `/pair <配对码>` 完成配对）。
 
-3. Claude Code 配置后重启网关：`a2t gateway restart`。
+3. 配置后重启网关：`a2t gateway restart`。
 
 ## 按目录开启
 
@@ -81,7 +82,7 @@ a2t enable claude   # 该目录的 Claude Code 会话约 30 秒内自动接入
 | `a2t status` | 查看安装、网关、已开启的目录 |
 | `a2t setup <pi\|claude>` | 配置 Bot |
 | `a2t enable / disable <pi\|claude> [目录]` | 按目录开启 / 关闭 |
-| `a2t gateway <restart\|status\|logs>` | Claude 网关服务 |
+| `a2t gateway <restart\|status\|logs>` | 网关服务（Pi 与 Claude Code 共用） |
 | `a2t migrate [--apply]` | 迁移旧版本数据（默认只列清单；执行前自动备份） |
 | `a2t uninstall` | 卸载插件、服务；配置与数据保留 |
 
@@ -93,14 +94,14 @@ a2t enable claude   # 该目录的 Claude Code 会话约 30 秒内自动接入
 ~/.agent2telegram/
   app/       程序
   bin/a2t    命令行
-  pi/        Pi 的 Bot 配置 tg.json、运行状态、目录绑定、日志
+  pi/        Pi 的 Bot 配置 tg.json、话题记录、目录绑定、日志、网关 socket
   claude/    Claude Code 的 Bot 配置、话题记录、已开启目录、网关 socket
   bots/      每个 Bot 归属哪个 Agent（同一个 Bot 不会被两个 Agent 同时使用）
   cache/     Telegram 发来的附件
   backup/    a2t migrate 的备份
 ```
 
-宿主程序只认固定位置的东西都只是指向 `app` 的入口：Pi 的 `<目录>/.pi/extensions/agent2telegram.ts`、Claude Code 的插件登记、`~/.config/systemd/user/agent2telegram-claude.service`、`~/.local/bin/a2t`。
+宿主程序只认固定位置的东西都只是指向 `app` 的入口：Pi 的 `<目录>/.pi/extensions/agent2telegram.ts`、Claude Code 的插件登记、`~/.config/systemd/user/agent2telegram-gateway.service`、`~/.local/bin/a2t`。
 
 ## 安全须知
 

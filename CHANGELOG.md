@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Pi now joins the same long-lived gateway as Claude Code: one systemd user service `agent2telegram-gateway` (replaces `agent2telegram-claude`) polls every agent's Bot and hands each directory's topic to its online session over a Unix socket (`~/.agent2telegram/<agent>/gateway.sock`). Pi receives the raw updates and still answers Telegram itself. Removed from Pi: leader election between instances, local forwarding, history replay, instance switching, private-chat mode, the Telegram `!`/`!!` Shell entry, and the `/tg` Config items Thinking and Shell confirm; `/tg` Project no longer picks a Bot (each agent uses its default Bot). Known gap: a closed or deleted Pi topic is no longer reopened or recreated automatically.
+
 - Renamed to **agent2telegram**. One-line install/upgrade (`install.sh`) and the `a2t` command (`status`, `setup`, `enable`/`disable` per directory, `gateway`, `migrate`, `uninstall`). Everything lives under `~/.agent2telegram/`; Pi's Telegram data moves there from `~/.pi/agent` (read in place until `a2t migrate --apply`), per-directory Pi bindings are stored centrally instead of `<dir>/.pi/telegram.json`, uploads go to `~/.agent2telegram/cache/uploads/`. `/tg-setup` is replaced by `a2t enable pi`.
 
 - Claude Code support: a Claude Code plugin (mod) plus one long-lived gateway per Bot (`agent2telegram-claude` systemd user service). Each enabled directory gets its own forum topic; prompts, final answers, typing, `/stop`, `/compact`, `/clear`, `/usage`, `/restart` (tmux, resumes the same session with its original flags); permission dialogs and AskUserQuestion are answered first-wins from the terminal or Telegram.

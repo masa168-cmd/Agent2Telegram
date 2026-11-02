@@ -145,7 +145,7 @@ describe("BotGateway sessions and topics", () => {
     const t = setup(undefined, { isEnabled: cwd => cwd === "/work/alpha" });
     expect(await t.gateway.open({ connId: "x", cwd: "/work/beta" })).toMatchObject({ ok: false, quiet: true });
     expect(await t.gateway.open({ connId: "y", cwd: "/work/alpha" })).toMatchObject({ ok: true, threadId: 77 });
-    expect(t.api.mock.calls.map(c => c[0])).toEqual(["createForumTopic", "sendMessage"]);
+    expect(t.api).toHaveBeenCalledTimes(1);
   });
 
   it("drops a session as soon as its directory is disabled, says so in the topic, and takes it back once enabled", async () => {
@@ -250,18 +250,18 @@ describe("BotGateway commands", () => {
     expect(t.sent.at(-1)?.text).toBe("暂不支持这个命令。可用：/menu /stop /status /model /effort /commands /compact /clear /usage /restart");
   });
 
-  it("/menu puts the commands on a reply keyboard; a new topic gets it too", async () => {
+  it("/menu puts the commands on a reply keyboard that folds after a tap; a new topic does not get it", async () => {
     const t = setup();
     await t.gateway.open({ connId: "a", cwd: "/work/alpha" });
     const sends = () => t.api.mock.calls.filter(c => c[0] === "sendMessage").map(c => c[1] as Record<string, unknown>);
-    expect(sends()).toHaveLength(1);
+    expect(sends()).toHaveLength(0);
     t.gateway.close("a");
     await t.gateway.handleUpdate(topicMessage("/menu"));
-    expect(sends()).toHaveLength(2);
-    const sent = sends()[1]!;
+    expect(sends()).toHaveLength(1);
+    const sent = sends()[0]!;
     expect(sent).toMatchObject({ chat_id: CHAT, message_thread_id: 77 });
-    const markup = sent.reply_markup as { keyboard: Array<Array<{ text: string }>>; is_persistent: boolean };
-    expect(markup.is_persistent).toBe(true);
+    const markup = sent.reply_markup as { keyboard: Array<Array<{ text: string }>>; is_persistent: boolean; one_time_keyboard: boolean };
+    expect(markup).toMatchObject({ is_persistent: false, one_time_keyboard: true });
     expect(markup.keyboard.flat().map(b => b.text)).toEqual(["/stop", "/status", "/model", "/effort", "/commands", "/compact", "/clear", "/usage", "/restart"]);
     expect(markup.keyboard[0]).toHaveLength(4);
   });

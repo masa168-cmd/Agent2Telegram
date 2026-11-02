@@ -199,7 +199,6 @@ export class BotGateway {
     store.topics[key] = { threadId: created.message_thread_id, cwd: session.cwd, updatedAt: new Date(this.now()).toISOString() };
     await this.writeTopics(store);
     this.push(session, { type: "log", text: `Telegram 话题已创建：${name}` });
-    if (!this.rich) await this.sendMenu(created.message_thread_id).catch(() => undefined);
     return (session.threadId = created.message_thread_id);
   }
 
@@ -437,8 +436,9 @@ export class BotGateway {
   }
 
   /**
-   * Thin mode: a reply keyboard under the input, one button per command, so a
-   * tap sends it (the group has no menu button, and clients cache the "/" list).
+   * Thin mode, on /menu: a reply keyboard, one button per command, so a tap
+   * sends it (the group has no menu button, and clients cache the "/" list).
+   * It folds after a tap; the keyboard icon in the input opens it again.
    */
   async sendMenu(threadId: number): Promise<void> {
     const config = this.deps.getConfig();
@@ -447,8 +447,8 @@ export class BotGateway {
     const keyboard: Array<Array<{ text: string }>> = [];
     for (let i = 0; i < buttons.length; i += 4) keyboard.push(buttons.slice(i, i + 4));
     await this.deps.api("sendMessage", { chat_id: config.forumChatId, message_thread_id: threadId,
-      text: `快捷按钮已放在输入框下方（${this.label}）。收起后发 /menu 可重新调出。`,
-      reply_markup: { keyboard, is_persistent: true, resize_keyboard: true } });
+      text: `快捷按钮（${this.label}）：点一个后自动收起，点输入框旁的键盘图标可再打开。`,
+      reply_markup: { keyboard, is_persistent: false, one_time_keyboard: true, resize_keyboard: true } });
   }
 
   /** Register the "/" menu for the forum group only. */

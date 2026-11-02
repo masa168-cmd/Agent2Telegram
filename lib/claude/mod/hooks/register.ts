@@ -1,11 +1,13 @@
-// Claude Code side of the Telegram bridge (one directory, one topic).
-// Starts the sidecar at session start. Telegram text becomes a prompt; /stop,
-// /compact, /clear and /usage run here; each main-loop turn's final answer goes
-// back. Permission dialogs and AskUserQuestion are also shown in Telegram:
-// whichever side answers first wins, and the other side's question goes away.
+// Claude Code side of the Telegram bridge. Every session connects to the local
+// gateway (a systemd --user service that alone polls the Bot) over a Unix
+// socket, gets the forum topic of its launch directory, and long-polls for what
+// Telegram sent there. Telegram text becomes a prompt; /stop, /compact, /clear,
+// /usage and /restart run here; each main-loop turn's final answer goes back.
+// Permission dialogs and AskUserQuestion are also shown in Telegram: whichever
+// side answers first wins, and the other side's question goes away.
 import type { EngineInterface, Register } from 'claude-code'
 
-type SidecarEvent =
+type GatewayEvent =
   | { type: 'prompt'; text: string }
   | { type: 'abort' }
   | { type: 'command'; name: 'compact' | 'clear' }
@@ -14,6 +16,7 @@ type SidecarEvent =
   | { type: 'log'; text: string }
 
 type PendingResult = { answer: string } | { cancelled: true } | { pending: true }
+type OpenResult = { ok: true; threadId?: number; notices?: string[] } | { ok: false; reason: string }
 
 const ALLOW = '✅ 允许'
 const DENY = '❌ 拒绝'
@@ -25,26 +28,35 @@ const CHAT_REASON = '用户选择先就这些问题聊一聊，暂不作答。�
 // permission request is not relayed (AskUserQuestion has its own relay below).
 const PERSON_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode'])
 
-// Module state: starts over when the module reloads; the sidecar is restarted then too.
+// Module state: starts over when the module reloads (a new connection then).
+const connId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
 let socketPath: string | undefined
+let connected = false
+/** Set once Claude Code is exiting: stop polling and never register again. */
+let closing = false
 let runningTurn: string | undefined
 let promptChain: Promise<unknown> = Promise.resolve()
 let idCounter = 0
+let lastReason: string | undefined
 
 function newId(): string {
   idCounter += 1
-  return `${Date.now().toString(36)}${idCounter.toString(36)}`
+  return `${connId.slice(-6)}${idCounter.toString(36)}`
 }
 
-/** POST to the sidecar; the parsed JSON reply, or undefined when it is not reachable. */
-async function call($: EngineInterface, path: string, body: unknown): Promise<unknown> {
+function later($: EngineInterface, ms: number): Promise<void> {
+  return new Promise(done => { $.clock.after(ms, () => done()) })
+}
+
+/** POST to the gateway; the parsed JSON reply, or undefined when it is not reachable. */
+async function call($: EngineInterface, path: string, body: Record<string, unknown> = {}): Promise<unknown> {
   if (!socketPath) return undefined
   try {
-    const res = await $.http.fetch(`http://sidecar${path}`, {
+    const res = await $.http.fetch(`http://gateway${path}`, {
       method: 'POST',
       socketPath,
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ connId, ...body }),
     })
     return res.ok && res.text ? JSON.parse(res.text) : undefined
   } catch (error) {
@@ -62,6 +74,7 @@ async function askTelegram(
   $: EngineInterface, signal: AbortSignal, title: string, body: string, labels: string[],
   elsewhere?: Promise<unknown>, textLabel?: string,
 ): Promise<string | undefined> {
+  if (!connected) return undefined
   const id = newId()
   const shown = await call($, '/prompt', { id, title, body, labels, textLabel }) as { shown?: boolean } | undefined
   if (!shown?.shown) return undefined
@@ -101,7 +114,7 @@ async function usageText($: EngineInterface): Promise<string> {
   return lines.length > 0 ? lines.join('\n') : '暂时没有用量数据（本会话发出第一条消息后才有）。'
 }
 
-async function handle($: EngineInterface, event: SidecarEvent) {
+async function handle($: EngineInterface, event: GatewayEvent) {
   if (event.type === 'prompt') {
     // A prompt waits until Claude is idle; keep order, but never block /stop behind it.
     const text = event.text
@@ -121,14 +134,14 @@ async function handle($: EngineInterface, event: SidecarEvent) {
       }
     })()
   } else if (event.type === 'restart') {
-    // The sidecar starts a helper that waits for this process to exit and then
-    // types `claude --resume <this session>` into the same tmux pane.
+    // The gateway starts a helper that waits for this process to exit and then
+    // types `claude … --resume <this session>` into the same tmux pane.
     const sessionId = await $.session.id()
-    const prepared = await call($, '/restart-prepare', { sessionId, modDir: $.plugin.root }) as { ok?: boolean } | undefined
+    const prepared = await call($, '/restart-prepare', { sessionId }) as { ok?: boolean } | undefined
     if (!prepared?.ok) return
     if (runningTurn) await $.turn.abort({ turnId: runningTurn }).catch(() => undefined)
     void $.command.run({ command: 'exit' }).catch(error => {
-      $.ui.log(`agent2telegram: /restart 退出失败：${String(error)}`)
+      $.ui.log(`/restart 退出失败：${String(error)}`)
     })
   } else if (event.type === 'usage') {
     const text = await usageText($).catch(error => `读取用量失败：${String(error)}`)
@@ -136,45 +149,72 @@ async function handle($: EngineInterface, event: SidecarEvent) {
   } else $.ui.log(event.text)
 }
 
+/** Register with the gateway. Says why once when it cannot (not running, not set up, directory taken). */
+async function open($: EngineInterface, cwd: string): Promise<boolean> {
+  const pid = Number((await $.process.run(['sh', '-c', 'echo $PPID']).catch(() => undefined))?.stdout.trim())
+  const result = await call($, '/open', {
+    cwd,
+    claudeSessionId: await $.session.id(),
+    ...(Number.isSafeInteger(pid) && pid > 1 ? { pid } : {}),
+    pane: (await $.env.get('TMUX_PANE')) ?? '',
+    modDir: $.plugin.root,
+  }) as OpenResult | undefined
+  const reason = result === undefined ? 'Telegram 网关未运行（systemctl --user status claude-telegram-gateway）。' : result.ok ? undefined : result.reason
+  if (reason !== undefined) {
+    if (reason !== lastReason) $.ui.log(reason)
+    lastReason = reason
+    connected = false
+    return false
+  }
+  if (result?.ok) {
+    if (lastReason !== undefined || !connected) $.ui.log('Telegram 已接入。')
+    for (const notice of result.notices ?? []) $.ui.log(notice)
+  }
+  lastReason = undefined
+  connected = true
+  return true
+}
+
+/** Connect, then long-poll the gateway for as long as the module lives. */
+async function serve($: EngineInterface, cwd: string) {
+  while (!closing) {
+    if (!connected && !(await open($, cwd))) {
+      await later($, 30_000)
+      continue
+    }
+    const reply = await call($, '/poll') as { events?: GatewayEvent[]; unknown?: true } | undefined
+    if (reply === undefined) { connected = false; await later($, 5_000); continue }
+    if (reply.unknown) { connected = false; continue } // the gateway restarted: register again
+    for (const event of reply.events ?? []) {
+      try { await handle($, event) } catch (error) { $.ui.log(`agent2telegram: ${String(error)}`, { to: 'debug' }) }
+    }
+  }
+}
+
 export const register: Register = (on) => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     if (!e.isInteractive) return started
     const dataDir = (await $.env.get('CLAUDE_TELEGRAM_DIR')) ?? `${await $.env.get('HOME')}/.claude-telegram`
-    const id = (await $.session.id()).replace(/[^\w-]/g, '').slice(0, 16)
-    socketPath = `${dataDir}/run/${id}.sock`
-    const entry = `${$.plugin.root}/../../../dist/lib/claude/sidecar/main.js`
-    const sock = socketPath
-    void (async () => {
-      let buffered = ''
-      try {
-        const child = $.process.spawn({ argv: ['node', entry, '--cwd', e.cwd, '--socket', sock] })
-        for await (const { stream, text } of child) {
-          if (stream === 'stderr') { $.ui.log(`agent2telegram: ${text}`, { to: 'debug' }); continue }
-          buffered += text
-          let newline = buffered.indexOf('\n')
-          while (newline >= 0) {
-            const line = buffered.slice(0, newline).trim()
-            buffered = buffered.slice(newline + 1)
-            newline = buffered.indexOf('\n')
-            if (!line) continue
-            try { await handle($, JSON.parse(line) as SidecarEvent) } catch (error) {
-              $.ui.log(`agent2telegram: ${String(error)}`, { to: 'debug' })
-            }
-          }
-        }
-      } catch (error) {
-        $.ui.log(`agent2telegram: sidecar 无法启动：${String(error)}`)
-      }
-      socketPath = undefined
-    })()
+    socketPath = `${dataDir}/gateway.sock`
+    void serve($, e.cwd)
     return started
+  })
+
+  // /clear ends the conversation but not the session's connection; only a real
+  // exit says goodbye (a session killed without one is dropped after a minute).
+  on('session.end', async ($, e, next) => {
+    if (e.reason !== 'clear') {
+      closing = true
+      if (connected) await call($, '/close')
+    }
+    return next(e)
   })
 
   on('turn.start', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
     runningTurn = e.turnId
-    void call($, '/turn-start', {})
+    void call($, '/turn-start')
     return next(e)
   })
 
@@ -190,7 +230,7 @@ export const register: Register = (on) => {
   // A Telegram tap answers it (the dialog closes); a terminal answer aborts this
   // hook, and the Telegram buttons are taken back.
   on('classic.PermissionRequest', async ($, e, next) => {
-    if (!socketPath || PERSON_TOOLS.has(e.tool_name)) return next(e)
+    if (!connected || PERSON_TOOLS.has(e.tool_name)) return next(e)
     const answer = await askTelegram($, next.signal, `Claude 请求使用 ${e.tool_name}`,
       describeInput(e.tool_name, e.tool_input), [ALLOW, DENY])
     if (answer === ALLOW) return { decision: { behavior: 'allow' } }
@@ -208,7 +248,7 @@ export const register: Register = (on) => {
       const kind = (q as { kind?: string }).kind
       return !q.multiSelect && (kind === undefined || kind === 'choice') && q.options?.length > 0
     })
-    if (!socketPath || !relayable) return next(e)
+    if (!connected || !relayable) return next(e)
     const engine = next(e)
     const answers: Record<string, string> = {}
     for (const [index, q] of questions.entries()) {

@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { restartArgv, restartCommand, runRestart, type RestartJob } from "../sidecar/restart-helper.ts";
+import { restartArgv, restartCommand, runRestart, type RestartJob } from "../gateway/restart-helper.ts";
 
 describe("Claude /restart helper", () => {
   const dirs: string[] = [];
@@ -18,7 +18,7 @@ describe("Claude /restart helper", () => {
 
   it("quotes the resume command for the shell", () => {
     expect(restartCommand({ cwd: "/work/it's here", modDir: "/m", sessionId: "s1" }))
-      .toBe(`cd '/work/it'\\''s here' && CTG_RESTARTED=1 'claude' '--plugin-dir' '/m' '--resume' 's1'`);
+      .toBe(`cd '/work/it'\\''s here' && 'claude' '--plugin-dir' '/m' '--resume' 's1'`);
   });
 
   it("keeps the old flags and swaps the session for this one", () => {

@@ -1,5 +1,5 @@
 // Interactive setup, run by the user in SSH (the token never passes through Claude):
-//   node dist/lib/claude/sidecar/setup.js
+//   node dist/lib/claude/gateway/setup.js
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
@@ -56,7 +56,7 @@ async function main(): Promise<void> {
   await addBot(bot);
   await setDefaultBot(bot.id);
   console.log(`已保存 @${botUsername}。`);
-  console.log("下一步：用 ctg 启动 Claude Code（sidecar 运行时才能配对），然后：");
+  console.log("下一步：重启网关（systemctl --user restart claude-telegram-gateway），然后：");
   console.log(formatPairingInstructions(paired));
   console.log("另外请确认 Bot 已是论坛群管理员，并有「管理话题」权限。");
 }

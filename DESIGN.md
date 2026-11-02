@@ -1,6 +1,6 @@
 # 多 Agent Telegram 接入设计（草案，待审阅）
 
-状态：阶段 0、1 已完成；Claude Code 接入进行中（顺序见第 7 节）。日期：2026-11-01。
+状态：阶段 0、1、2、3、4a 已完成（Claude Code 经网关接入、多目录共用 Bot，已真机验收）；下一步 4b。日期：2026-11-02。
 
 ## 1. 目标与约束
 
@@ -34,7 +34,7 @@
 - TUI 改用内嵌 server 时（例如设置了 `CODEX_EXEC_SERVER_URL`，或共享服务初始化失败），外部程序看不到这个会话，Telegram 无法接入。
 - Codex 终端里的斜杠命令属于 TUI 本地功能，app-server 没有通用的「执行斜杠命令」接口，需要逐个映射到对应 RPC。
 
-### 2.3 Claude Code（本机 2.1.316；依据其自带 mods 类型定义与官方文档，未写原型）
+### 2.3 Claude Code（本机 2.1.316；依据其自带 mods 类型定义、官方文档与实测）
 
 | 方式 | 能否接入终端里运行中的同一会话 | 结论 |
 |---|---|---|
@@ -49,7 +49,8 @@ mods 提供的相关能力（2.1.316 自带类型定义 `claude-code.d.ts` 与 `
 - 最终答案：`turn.complete` 的 `answer`（另有 `isAborted`、`durationMs`）；`session.start` 给出 `cwd`，`$.session.id()` 给出会话 ID。
 - 审批与选择框：`tool.call` 钩子可以挂起工具调用，等结果后再 `next(e)` 放行或返回 `{ deny }`；也可以不调用 `next`、直接返回结果自行作答（`AskUserQuestion` 可用此方式由 Telegram 作答）。`tool.check` 可查询或给出 allow/ask/deny。
 - 命令：`$.command.run` 等同用户手打 `/命令`，`$.command.list` 含内置命令；`$.command.register` 注册新命令。
-- sidecar：`$.process.spawn` 在 `session.start` 启动、随会话结束或模块重载退出，mod 逐段读取其输出；mod→sidecar 用 `$.http.fetch` 走 Unix socket（`socketPath`）。
+- 本机通信：`$.http.fetch` 可走 Unix socket（`socketPath`），**单次最长 30 秒**（实测，超时中止），挂起等待不计入钩子预算。`$.process.spawn` 起的子进程随会话或模块重载结束；实测 Claude Code 退出时会结束它启动的全部进程（detached 也不例外）。
+- 会话：`session.end` 在 `/exit` 时触发；`/clear` 也触发且之后没有 `session.start`。`$.process.run(['sh','-c','echo $PPID'])` 得到 Claude Code 主进程号，`$.env.get('TMUX_PANE')` 得到窗格；`/exit` 后 `--resume <会话 ID>` 续上同一会话（实测）。
 - 定时与存储：`$.clock.every/after`、`$.store`（跨会话）、`$.fs`。
 - 限制：钩子模块里没有 Node API；单个钩子预算 10 秒，等待 `next` 或 `$` 调用的时间不计入，`$.clock.sleep` 和自己的 promise 计入。
 
@@ -59,32 +60,34 @@ mods 提供的相关能力（2.1.316 自带类型定义 `claude-code.d.ts` 与 `
 |---|---|
 | 远程审批先答先得 | **实测可行**（11-01）：`classic.PermissionRequest` 钩子等待期间终端对话框照常显示；钩子返回 allow/deny 后对话框关闭；终端先答时钩子的 `next.signal` 中止，可收回 Telegram 按钮。 |
 | `$.command.run` 执行内置命令 | 文档确认可以；实测 `/usage` 返回空并在终端弹出面板，打开交互界面的命令不适合从 Telegram 执行（`/usage` 改读 `$.session.usage()`）。 |
-| 多个会话共用一个 Bot | 可行：sidecar 是 Node 进程，直接复用 `instance-coordinator`。 |
+| 多个会话共用一个 Bot | 已实现：改用每个 Bot 一个常驻网关（见 4.1），不用选主。 |
 | 选择框转到 Telegram | **实测可行**：`tool.call` 钩子先 `next(e)` 打开终端选择框，Telegram 先答时直接返回结果，终端选择框关闭。 |
 
-其他：本机 Node 22.22 未编译 TypeScript 支持，不能直接运行 `.ts`，sidecar 需用 `tsc` 编译成 JS 运行；mod 由 Claude Code 加载，不受影响。
+其他：本机 Node 22.22 未编译 TypeScript 支持，不能直接运行 `.ts`，网关用 `tsc` 编译成 JS（`npm run build:claude` → `dist/`）运行；mod 由 Claude Code 加载，不受影响。
 
 ## 3. 三种 Agent 对比
 
 | 项目 | Pi | Codex | Claude Code |
 |---|---|---|---|
-| 插件运行位置 | Agent 进程内 | Agent 进程外（连接常驻 app-server） | Agent 进程内（mod）+ 一个 Node 辅助进程 |
+| 插件运行位置 | Agent 进程内 | Agent 进程外（连接常驻 app-server） | Agent 进程内（mod）+ 每个 Bot 一个常驻网关 |
 | 接入同一会话 | 是 | 是（经 `thread/resume`） | 是（mod 本身就在会话里） |
 | 审批先答先得 | 已实现 | 协议原生支持 | 已实现（`classic.PermissionRequest`） |
 | 命令 | 宿主命令基本可用 | 需逐个映射到 RPC | `$.command.run` 可用；交互型（如 `/usage`）需改用数据接口 |
 | 选择框和菜单 | 已实现（`lib/tui/`） | 要按 app-server 的请求类型重做 | 要按 mod 事件重做 |
-| 多目录共用 Bot | `instance-coordinator` 选主 | 一个 bridge 进程即可服务全部目录 | 需要选主（同 Pi） |
+| 多目录共用 Bot | `instance-coordinator` 选主 | 一个 bridge 进程即可服务全部目录 | 常驻网关按话题分发（已实现） |
 | 主要风险 | 依赖 Pi 内部实现，升级易坏 | 接口标记为 experimental | mods 为早期接口，随版本变化 |
 
 ## 4. 架构方案
 
 ### 4.1 进程模型
 
-- 每个 Agent 一个 Bot、一个论坛群，互不影响，因此**不需要独立网关**。
+- 每个 Agent 一个 Bot、一个论坛群，互不影响；**不需要跨 Agent 的总网关**。
 - 同一个 Agent 在多个目录运行时，共用这个 Agent 的 Bot，仍需要「一个进程接收消息，再按话题分发」。
   - Pi：沿用 `instance-coordinator`。
   - Codex：所有会话都在同一个常驻 app-server 里，用**一个常驻 bridge 进程**连接 app-server，按 thread 的 `cwd` 对应话题即可，不需要选主。
-  - Claude Code：每个会话一个 mod 加一个 sidecar，sidecar 之间复用 `instance-coordinator` 选主。mod 和 sidecar 都用 TypeScript；代码在 `lib/claude/`（`mod/`、`sidecar/`），sidecar 编译输出到 `dist/`；数据目录 `~/.claude-telegram/`（经 `setTelegramDataDir`），与 Pi 分开。开发期用别名 `ctg`（`claude --plugin-dir …/lib/claude/mod`）启动，稳定后装成本地插件；目录未接入 Telegram 时 mod 不做任何事。Token 由用户在 SSH 中运行 sidecar 的配置命令录入。
+  - Claude Code（阶段 4a 实现）：**每个 Bot 一个常驻网关**（`lib/claude/gateway/`，systemd --user 服务 `claude-telegram-gateway`，需 linger），它是该 Bot 唯一的拉取者，按启动目录建话题、按话题把消息分给会话。每个会话的 mod 经 Unix socket `~/.claude-telegram/gateway.sock` 直连网关：登记（`/open`，带 mod 每次加载生成的连接编号、目录、Claude 会话 ID、进程号、tmux 窗格）→ 反复挂起 20 秒取消息（`/poll`）→ 退出时注销（`/close`，`/clear` 不注销）。在线判断全在网关内存：取消息超时 60 秒或进程已不存在即移除；不用心跳文件、不用选主，自己的进程之间不会出现 409。同一目录同时只接一个会话。网关重启后会话自动重新登记（实测 2 秒内）。`/restart` 由网关起辅助程序（不在 Claude Code 进程树里），读 `/proc/<pid>/cmdline` 保留原参数，向同一 tmux 窗格输入 `claude … --resume <会话 ID>`。
+  - 选型理由（11-02 与用户确认）：照搬 Pi 的文件锁选主要把复杂的交接逻辑再写一遍，交接慢且交接期会有 409；网关常驻约 26–95 MB、CPU 近零，会话不再各起一个约 95 MB 的 sidecar。Pi 暂不迁移，4b 再评估。
+  - 代码：`lib/claude/mod/`（插件名 `agent2telegram`）与 `lib/claude/gateway/`；数据目录 `~/.claude-telegram/`；开发期别名 `ctg`（`claude --plugin-dir …/lib/claude/mod`）。
 
 ### 4.2 代码分层
 
@@ -97,7 +100,7 @@ telegram-core/          与 Agent 无关
 agent-adapter 接口       见 4.3
 adapters/pi/            现有 session-capture、tui/、命令、renderer 的 Pi 部分
 adapters/codex/         app-server 客户端 + 事件映射 + 命令映射
-adapters/claude/        mod（钩子模块）+ sidecar（Node）
+adapters/claude/        mod（钩子模块）+ 常驻网关（Node，systemd --user）
 ```
 
 阶段 1 已完成第一步拆分：`lib/core/`（与 Agent 无关，24 个源文件；`core-boundary.test.ts` 禁止它引用 Pi 包或 `lib/core` 以外的文件）和 `lib/pi/`（Pi 专用，含 `tui/`、`commands/`、`context-budget/`）。数据目录统一由 `lib/core/data-dir.ts` 提供，Pi 默认仍是 `~/.pi/agent`。`forum-session`、`forum-transport`、`history-replay`、`menu-commands`、`attachments` 仍有 Pi 依赖，留在 `lib/pi/`，阶段 4 定型接口时再拆。
@@ -147,7 +150,7 @@ interface AgentAdapter {
 按风险从高到低：
 
 1. 依赖 Pi 内部实现（`session-capture` 替换退出处理、`tui/` 读组件内部字段）。拆分改变不了，靠契约测试和版本检查兜底。
-2. 不能保证一个 Bot 只被一个 Agent 使用。多个 Pi 之间靠 `instance-coordinator` 的锁文件协调，但锁文件在 Pi 数据目录里，其他 Agent 看不到；Telegram 同一 Bot 只允许一个拉取者，另一个会收到 409，现在只提示一次（30 分钟冷却）且不停止拉取，两边会轮流抢消息。阶段 4 在 core 中处理：本机登记每个 Bot 的归属 Agent（pi / codex / claude），归属不同则拒绝启动并说明原因；收到 409 时停止拉取并明确提示「该 Bot 正被其他程序使用」。
+2. 一个 Bot 只给一个 Agent 用。**Claude 侧已实现（4a）**：网关启动时在 `~/.agent2telegram/bots/<token 哈希>.json` 登记归属，归属其他 Agent 或 Pi 运行目录里有存活实例在用这个 Bot 时拒绝接入；网关是唯一拉取者，第一次 409 视为交接 5 秒后重试，持续冲突则通知各会话并每分钟重试。**Pi 侧尚未登记与检查**，放到 4b。
 3. `controller.ts` 职责混杂。
 4. 路径写死：`/tg-setup` 入口指向 `/home/ubuntu/pi-telegram-plus-ex`，配置固定在 `~/.pi/agent`。
 5. `context-budget` 放在 tg 插件里。
@@ -161,9 +164,10 @@ interface AgentAdapter {
 |---|---|---|
 | 0 | 修配对：过期、次数上限、仅私聊 | 离线测试；现有 1194 项不回退 |
 | 1 | 在本仓库内整理目录：`lib/core/` 与 `lib/pi/`，不改行为；`config` 路径参数化；移出 `context-budget` | 离线测试全部通过；Pi 真机行为不变 |
-| 2 | Claude Code 最小原型：mod + sidecar，单目录、单话题，完成发任务、最终答案、中断、正在输入 | 离线测试；`claude plugin validate`；现有测试不回退 |
-| 3 | Claude Code 补齐审批、命令、选择框，实测先答先得 | 用 Claude Code 专用 Bot 和新群真机验收 |
-| 4 | 定型 `AgentAdapter` 接口（Pi + Claude Code），Pi 改为实现该接口；Claude Code 多目录；Bot 归属登记与 409 处理（第 6 节第 2 条） | 两个 Agent 都通过离线测试与真机验收 |
+| 2 | Claude Code 最小原型：mod + sidecar，单目录、单话题，完成发任务、最终答案、中断、正在输入 | **已完成**（a1954ca；sidecar 已在 4a 由网关取代） |
+| 3 | Claude Code 补齐审批、命令、选择框（先答先得）、`/restart` | **已完成**（真机验收） |
+| 4a | Claude Code 多目录共用 Bot：常驻网关（systemd --user）、mod 直连网关、Bot 归属登记与 409 处理 | **已完成**（11-02 真机两目录验收） |
+| 4b | 定型 `AgentAdapter` 接口（Pi + Claude Code），Pi 改为实现该接口；Pi 侧 Bot 归属；评估 Pi 迁到网关 | 两个 Agent 都通过离线测试与真机验收 |
 | 5 | Codex 适配器 | 用 Codex 专用 Bot 和新群真机验收 |
 | 6 | 拆成独立包（core / pi / codex / claude），迁入 `~/plugins/Agent2Telegram` | 发布前另行确认 |
 
@@ -171,7 +175,7 @@ interface AgentAdapter {
 
 ## 8. 需要决定的事项
 
-1. 第 4 节架构：Claude Code 部分已确认（mod + sidecar，TypeScript）；Codex 部分到阶段 5 再定。
+1. 第 4 节架构：Claude Code 部分已确认并实现（mod + 常驻网关，TypeScript）；Codex 部分到阶段 5 再定。
 2. 阶段顺序：已确认，见第 7 节。
 3. 本机已安装 Claude Code 2.1.316，此项无需再决定。
 4. Codex 和 Claude Code 的 Bot 与论坛群由你创建；Token 只在 SSH 中录入。

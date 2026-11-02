@@ -1,7 +1,7 @@
 // Detached helper for Telegram /restart (tmux only), same steps as the Pi helper
 // (lib/pi/restart-helper.mjs): wait for the old Claude Code to exit, check the
 // tmux pane is back at a shell prompt, then type
-// `cd <cwd> && CTG_RESTARTED=1 claude --plugin-dir <mod> --resume <session>`.
+// `cd <cwd> && claude … --plugin-dir <mod> --resume <session>` (the old flags kept).
 // Any failure is logged once; it never retries and never kills anything.
 import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
@@ -57,7 +57,7 @@ export function restartArgv(job: Pick<RestartJob, "modDir" | "sessionId" | "argv
 }
 
 export function restartCommand(job: Pick<RestartJob, "cwd" | "modDir" | "sessionId" | "argv">): string {
-  return `cd ${shellQuote(job.cwd)} && CTG_RESTARTED=1 ${restartArgv(job).map(shellQuote).join(" ")}`;
+  return `cd ${shellQuote(job.cwd)} && ${restartArgv(job).map(shellQuote).join(" ")}`;
 }
 
 function alive(pid: number): boolean {

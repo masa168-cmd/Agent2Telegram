@@ -8,6 +8,6 @@
     "sourceMap": false,
     "types": ["node"]
   },
-  "include": ["lib/claude/sidecar/main.ts", "lib/claude/sidecar/setup.ts", "lib/claude/sidecar/restart-helper.ts"],
+  "include": ["lib/claude/gateway/main.ts", "lib/claude/gateway/setup.ts", "lib/claude/gateway/restart-helper.ts"],
   "exclude": ["node_modules", "dist", "lib/**/__tests__/**"]
 }

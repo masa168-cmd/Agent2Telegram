@@ -237,13 +237,17 @@ describe("BotGateway sessions and topics", () => {
 });
 
 describe("BotGateway commands", () => {
-  it("turns /stop /compact /clear /usage into events and answers the rest with a notice", async () => {
+  it("turns /stop, the session commands and /usage into events and answers the rest with a notice", async () => {
     const t = setup();
     await t.gateway.open({ connId: "a", cwd: "/work/alpha" });
-    for (const text of ["/stop", "/stop@demo_bot", "/compact", "/clear", "/usage", "/model"]) await t.gateway.handleUpdate(topicMessage(text));
+    for (const text of ["/stop", "/stop@demo_bot", "/compact", "/clear", "/status", "/model", "/effort", "/commands", "/usage", "/resume"]) {
+      await t.gateway.handleUpdate(topicMessage(text));
+    }
     expect(await events(t.gateway, "a")).toEqual([
-      { type: "abort" }, { type: "abort" }, { type: "command", name: "compact" }, { type: "command", name: "clear" }, { type: "usage" }]);
-    expect(t.sent.at(-1)?.text).toContain("/restart");
+      { type: "abort" }, { type: "abort" }, { type: "command", name: "compact" }, { type: "command", name: "clear" },
+      { type: "command", name: "status" }, { type: "command", name: "model" }, { type: "command", name: "effort" },
+      { type: "command", name: "commands" }, { type: "usage" }]);
+    expect(t.sent.at(-1)?.text).toBe("暂不支持这个命令。可用：/stop /status /model /effort /commands /compact /clear /usage /restart");
   });
 
   it("registers the / menu for the forum group only", async () => {
@@ -251,7 +255,7 @@ describe("BotGateway commands", () => {
     await t.gateway.registerCommands();
     expect(t.api).toHaveBeenCalledWith("setMyCommands", expect.objectContaining({ scope: { type: "chat", chat_id: CHAT } }));
     const commands = (t.api.mock.calls[0]![1] as { commands: Array<{ command: string }> }).commands.map(c => c.command);
-    expect(commands).toEqual(["stop", "compact", "clear", "usage", "restart"]);
+    expect(commands).toEqual(["stop", "status", "model", "effort", "commands", "compact", "clear", "usage", "restart"]);
   });
 
   it("/restart only for a session in tmux; the helper keeps the old flags; reopening says restarted", async () => {

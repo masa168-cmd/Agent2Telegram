@@ -11,12 +11,16 @@ import type { RestartJob } from "./restart-helper.ts";
 export type GatewayEvent =
   | { type: "prompt"; text: string }
   | { type: "abort" }
-  | { type: "command"; name: "compact" | "clear" }
+  | { type: "command"; name: ClaudeMenuCommand }
   | { type: "usage" }
   | { type: "restart" }
   | { type: "log"; text: string }
   /** Rich clients (Pi) get the raw update of their topic and handle it themselves. */
   | { type: "update"; update: TelegramUpdate };
+
+/** Claude Code commands the mod runs itself. */
+export type ClaudeMenuCommand = "compact" | "clear" | "status" | "model" | "effort" | "commands";
+const SESSION_COMMANDS = new Set<string>(["compact", "clear", "status", "model", "effort", "commands"]);
 
 /** What a waiter on an approval or a question gets back. */
 export type PendingResult = { answer: string } | { cancelled: true } | { pending: true };
@@ -43,6 +47,10 @@ export type MenuCommand = { command: string; description: string };
 /** Commands shown in the group's "/" menu (Claude Code). */
 export const MENU_COMMANDS: readonly MenuCommand[] = [
   { command: "stop", description: "中断当前回合" },
+  { command: "status", description: "模型、上下文、用量一览" },
+  { command: "model", description: "切换模型（同时设为默认）" },
+  { command: "effort", description: "调整思考强度（同时设为默认）" },
+  { command: "commands", description: "执行你的技能和插件命令" },
   { command: "compact", description: "压缩上下文" },
   { command: "clear", description: "清空对话" },
   { command: "usage", description: "查看用量" },
@@ -384,7 +392,7 @@ export class BotGateway {
     if (command !== undefined && !this.commands.some(c => c.command === command)) {
       await this.deps.transport.sendText(chatId, `暂不支持这个命令。可用：${this.commands.map(c => `/${c.command}`).join(" ")}`, threadId);
     } else if (command === "stop") this.push(session, { type: "abort" });
-    else if (command === "compact" || command === "clear") this.push(session, { type: "command", name: command });
+    else if (SESSION_COMMANDS.has(command ?? "")) this.push(session, { type: "command", name: command as ClaudeMenuCommand });
     else if (command === "usage") this.push(session, { type: "usage" });
     else if (command === "restart") {
       if (session.pane && session.pid !== undefined) this.push(session, { type: "restart" });

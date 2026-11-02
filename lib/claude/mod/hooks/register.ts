@@ -1,8 +1,9 @@
 // Claude Code side of the Telegram bridge. Every session connects to the local
 // gateway (a systemd --user service that alone polls the Bot) over a Unix
 // socket, gets the forum topic of its launch directory, and long-polls for what
-// Telegram sent there. Telegram text becomes a prompt; /stop, /compact, /clear,
-// /usage and /restart run here; each main-loop turn's final answer goes back.
+// Telegram sent there. Telegram text becomes a prompt; /stop, /status, /model,
+// /effort, /commands, /compact, /clear, /usage and /restart run here; each
+// main-loop turn's final answer goes back.
 // Permission dialogs and AskUserQuestion are also shown in Telegram: whichever
 // side answers first wins, and the other side's question goes away.
 import type { EngineInterface, Register } from 'claude-code'
@@ -10,7 +11,7 @@ import type { EngineInterface, Register } from 'claude-code'
 type GatewayEvent =
   | { type: 'prompt'; text: string }
   | { type: 'abort' }
-  | { type: 'command'; name: 'compact' | 'clear' }
+  | { type: 'command'; name: 'compact' | 'clear' | 'status' | 'model' | 'effort' | 'commands' }
   | { type: 'usage' }
   | { type: 'restart' }
   | { type: 'log'; text: string }
@@ -23,6 +24,11 @@ const DENY = '❌ 拒绝'
 // The dialog's own extra rows: "Type something." and "Chat about this".
 const CUSTOM = '✏️ 自定义输入'
 const CHAT = '💬 先聊聊'
+const CANCEL = '✖️ 取消'
+/** A menu nobody answers goes away after this. */
+const MENU_TIMEOUT_MS = 5 * 60_000
+const MODELS = [['Opus', 'opus'], ['Sonnet', 'sonnet'], ['Haiku', 'haiku']] as const
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 const CHAT_REASON = '用户选择先就这些问题聊一聊，暂不作答。请停下来，等待用户的下一条消息。'
 // Tools whose dialog is a question for the person, not a yes/no approval: their
 // permission request is not relayed (AskUserQuestion has its own relay below).
@@ -116,6 +122,77 @@ async function usageText($: EngineInterface): Promise<string> {
   return lines.length > 0 ? lines.join('\n') : '暂时没有用量数据（本会话发出第一条消息后才有）。'
 }
 
+function notice($: EngineInterface, text: string): Promise<unknown> {
+  return call($, '/notice', { text })
+}
+
+/** Buttons in the topic plus Cancel; the chosen index, or undefined. */
+async function menu($: EngineInterface, title: string, body: string, labels: string[]): Promise<number | undefined> {
+  const stop = new AbortController()
+  $.clock.after(MENU_TIMEOUT_MS, () => stop.abort())
+  const answer = await askTelegram($, stop.signal, title, body, [...labels, CANCEL])
+  const index = answer === undefined ? -1 : labels.indexOf(answer)
+  return index >= 0 ? index : undefined
+}
+
+/** The effort Claude Code will use for `model`: its own setting, else the global one. */
+async function currentEffort($: EngineInterface, model: string): Promise<string | undefined> {
+  const perModel = await $.settings.read({ key: 'modelSettings' }).catch(() => undefined) as
+    Record<string, { effortLevel?: string }> | undefined
+  const global = await $.settings.read({ key: 'effortLevel' }).catch(() => undefined)
+  const level = perModel?.[model]?.effortLevel ?? global
+  return typeof level === 'string' ? level : undefined
+}
+
+async function statusText($: EngineInterface): Promise<string> {
+  const [model, id, turns, cwd, usage] = await Promise.all([$.session.model(), $.session.id(), $.session.turns(),
+    $.session.cwd(), $.session.usage()])
+  const effort = await currentEffort($, model)
+  const ctx = usage.context
+  const context = ctx.percent !== undefined
+    ? `已用 ${Math.round(ctx.percent)}%${ctx.tokens !== undefined ? `（${ctx.tokens.toLocaleString('en-US')} / ${ctx.window.toLocaleString('en-US')}）` : ''}`
+    : `窗口 ${ctx.window.toLocaleString('en-US')}（发出第一条消息后才有占用）`
+  return [
+    `模型：${model}${effort ? `，强度 ${effort}` : ''}`,
+    `目录：${cwd}`,
+    `会话：${id}（已对话 ${turns} 轮）`,
+    `上下文：${context}`,
+    await usageText($),
+  ].join('\n')
+}
+
+async function pickModel($: EngineInterface): Promise<void> {
+  const model = await $.session.model()
+  const labels = MODELS.map(([label, alias]) => (model.includes(alias) ? `✔ ${label}` : label))
+  const index = await menu($, '切换模型', `当前：${model}\n切换后同时设为新会话的默认模型。`, labels)
+  if (index === undefined) return
+  await $.command.run({ command: 'model', args: MODELS[index]![1] })
+  await notice($, `已切换到 ${await $.session.model()}（同时设为新会话默认）。`)
+}
+
+async function pickEffort($: EngineInterface): Promise<void> {
+  const model = await $.session.model()
+  const effort = await currentEffort($, model)
+  const labels = EFFORTS.map(level => (level === effort ? `✔ ${level}` : level))
+  const index = await menu($, '思考强度', `模型：${model}，当前：${effort ?? '未知'}\n切换后同时设为该模型新会话的默认强度；模型不支持的档位会自动降级。`, labels)
+  if (index === undefined) return
+  const out = await $.command.run({ command: 'effort', args: EFFORTS[index]! })
+  await notice($, out.text?.trim() || `强度已设为 ${EFFORTS[index]}。`)
+}
+
+/** Your skills and plugin commands (built-ins mostly draw terminal panels). */
+async function pickCommand($: EngineInterface): Promise<void> {
+  const commands = (await $.command.list())
+    .filter(c => (c.source === 'user' || c.source === 'plugin') && c.plugin !== 'agent2telegram')
+    .slice(0, 40)
+  if (commands.length === 0) { await notice($, '没有可用的自定义命令或技能。'); return }
+  const body = commands.map(c => `/${c.name}${c.description ? `：${c.description.slice(0, 60)}` : ''}`).join('\n')
+  const index = await menu($, '命令与技能', body, commands.map(c => `/${c.name}`))
+  if (index === undefined) return
+  const out = await $.command.run({ command: commands[index]!.name })
+  if (out.text?.trim()) await notice($, out.text.trim())
+}
+
 async function handle($: EngineInterface, event: GatewayEvent) {
   if (event.type === 'prompt') {
     // A prompt waits until Claude is idle; keep order, but never block /stop behind it.
@@ -129,8 +206,14 @@ async function handle($: EngineInterface, event: GatewayEvent) {
     const name = event.name
     void (async () => {
       try {
-        const out = await $.command.run({ command: name })
-        await call($, '/notice', { text: out.text?.trim() || `/${name} 已执行。` })
+        if (name === 'status') await notice($, await statusText($))
+        else if (name === 'model') await pickModel($)
+        else if (name === 'effort') await pickEffort($)
+        else if (name === 'commands') await pickCommand($)
+        else {
+          const out = await $.command.run({ command: name })
+          await notice($, out.text?.trim() || `/${name} 已执行。`)
+        }
       } catch (error) {
         await call($, '/notice', { text: `/${name} 执行失败：${String(error)}` })
       }

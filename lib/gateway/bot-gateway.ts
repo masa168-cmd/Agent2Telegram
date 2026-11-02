@@ -46,6 +46,7 @@ export type MenuCommand = { command: string; description: string };
 
 /** Commands shown in the group's "/" menu (Claude Code). */
 export const MENU_COMMANDS: readonly MenuCommand[] = [
+  { command: "menu", description: "在输入框下方显示快捷按钮" },
   { command: "stop", description: "中断当前回合" },
   { command: "status", description: "模型、上下文、用量一览" },
   { command: "model", description: "切换模型（同时设为默认）" },
@@ -198,6 +199,7 @@ export class BotGateway {
     store.topics[key] = { threadId: created.message_thread_id, cwd: session.cwd, updatedAt: new Date(this.now()).toISOString() };
     await this.writeTopics(store);
     this.push(session, { type: "log", text: `Telegram 话题已创建：${name}` });
+    if (!this.rich) await this.sendMenu(created.message_thread_id).catch(() => undefined);
     return (session.threadId = created.message_thread_id);
   }
 
@@ -376,6 +378,10 @@ export class BotGateway {
     const threadId = message.message_thread_id;
     const text = message.text?.trim();
     if (threadId === undefined || !text) return;
+    if (/^\/menu(?:@\w+)?$/.test(text)) {
+      await this.sendMenu(threadId);
+      return;
+    }
     const session = this.sessionForThread(threadId);
     if (!session) {
       const cwd = await this.topicCwd(threadId);
@@ -428,6 +434,21 @@ export class BotGateway {
       : update;
     this.push(session, { type: "update", update: routed });
     return true;
+  }
+
+  /**
+   * Thin mode: a reply keyboard under the input, one button per command, so a
+   * tap sends it (the group has no menu button, and clients cache the "/" list).
+   */
+  async sendMenu(threadId: number): Promise<void> {
+    const config = this.deps.getConfig();
+    if (config.forumChatId === undefined) return;
+    const buttons = this.commands.filter(c => c.command !== "menu").map(c => ({ text: `/${c.command}` }));
+    const keyboard: Array<Array<{ text: string }>> = [];
+    for (let i = 0; i < buttons.length; i += 4) keyboard.push(buttons.slice(i, i + 4));
+    await this.deps.api("sendMessage", { chat_id: config.forumChatId, message_thread_id: threadId,
+      text: `快捷按钮已放在输入框下方（${this.label}）。收起后发 /menu 可重新调出。`,
+      reply_markup: { keyboard, is_persistent: true, resize_keyboard: true } });
   }
 
   /** Register the "/" menu for the forum group only. */

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Claude Code and Codex topics: `/menu` puts every command on a persistent reply keyboard under the input (forum groups have no menu button, and clients cache the "/" list); a newly created topic gets it automatically.
+
 - Claude Code topics: new `/status` (model and effort, directory, session, turns, context use, rate limits, cost), `/model` (Opus / Sonnet / Haiku buttons), `/effort` (low…max buttons) and `/commands` (your skills and plugin commands as buttons). `/model` and `/effort` run Claude Code's own `/model <name>` and `/effort <level>`, which also save the choice as the default for new sessions; unanswered menus are taken back after 5 minutes.
 
 - Codex support: the gateway connects to Codex's shared app-server (WebSocket on `~/.codex/app-server-control/app-server-control.sock`) and serves each loaded terminal thread of a directory enabled with `a2t enable codex` in its own topic of the Codex Bot's forum group. Prompts become turns (steered into a running turn), final answers of every turn go to the topic, `/stop`, `/compact` and `/usage` map to app-server requests; nothing is installed into Codex. `a2t setup|enable|disable|status codex` and `install.sh --codex`. New dependency: `ws`. Thin-mode commands are now per agent (the "/" menu and the "unsupported" reply list only what the agent supports).

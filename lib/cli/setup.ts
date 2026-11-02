@@ -21,10 +21,12 @@ export async function runSetup(agent: SetupAgent, dataDir: string): Promise<numb
   let muted = false;
   const output = new Writable({ write(chunk, _enc, done) { if (!muted) process.stdout.write(chunk); done(); } });
   const rl = createInterface({ input, output, terminal: true });
+  // The question is readline's own prompt: written to stdout beside it, the
+  // line refresh (cursor to column 1, clear) would wipe it from the screen.
   const ask = (question: string, hidden = false) => new Promise<string>(resolve => {
-    process.stdout.write(question);
+    muted = false;
+    rl.question(question, answer => { muted = false; if (hidden) process.stdout.write("\n"); resolve(answer.trim()); });
     muted = hidden;
-    rl.question("", answer => { muted = false; if (hidden) process.stdout.write("\n"); resolve(answer.trim()); });
   });
   try {
     setTelegramDataDir(dataDir);

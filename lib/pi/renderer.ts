@@ -420,14 +420,20 @@ export function registerTelegramRenderer(
     } catch (err) { renderLog.warn("tool-result image upload failed", { err }); }
   });
 
+  // A reply is pinned to the send lease current when it starts, so a session
+  // switch cannot move its final answer, even one with no streamed text.
   pi.on("message_start", event => {
     if (event.message.role !== "assistant" || isBackgroundAgentActivity()) return;
     const key = eventTargetKey();
-    if (key) replyLeases.delete(key);
+    if (!key) return;
+    replyLeases.delete(key);
+    const chatId = deps.getActiveTurn()?.chatId ?? defaultChats()[0];
+    const lease = deps.getSendLease?.();
+    if (chatId !== undefined && (!deps.getSendLease || lease !== undefined)) replyLeases.set(key, lease);
   });
 
-  // Nothing is sent while text streams. The first streamed text pins the reply
-  // to its send lease, so a session switch cannot move its final answer.
+  // Nothing is sent while text streams. If no lease was available at the start,
+  // the first streamed text pins it instead.
   pi.on("message_update", (event) => {
     if (event.message.role !== "assistant" || isBackgroundAgentActivity()) return;
     const key = eventTargetKey();

@@ -122,3 +122,19 @@ describe("process steps and tool events (no merged process message)", () => {
     expect(f.calls[0]).toMatchObject({ kind: "send", thread: 11, text: expect.stringContaining("file body") });
   });
 });
+
+describe("replies without streamed text keep their send lease", () => {
+  it("does not send an old reply's final answer after the generation changed", async () => {
+    const f = fixture();
+    await f.emit("message_start", "");
+    f.setTarget({ botId: "b", chatId: -100123, sessionId: "new", threadId: 22, generation: "new" });
+    await f.emit("message_end", "old final without stream");
+    expect(f.calls).toEqual([]);
+  });
+  it("still sends a reply without streamed text when nothing changed", async () => {
+    const f = fixture();
+    await f.emit("message_start", ""); await f.emit("message_end", "answer without stream");
+    expect(f.calls).toHaveLength(1);
+    expect(f.calls[0]).toMatchObject({ kind: "send", thread: 11, text: expect.stringContaining("answer without stream") });
+  });
+});

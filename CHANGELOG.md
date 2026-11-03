@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Pi renderer: removed the switched-off merged "⚙️ 过程" message and streaming "🤖 正在输出…" preview code (`PROCESS_MESSAGES_ENABLED`, `STREAM_PREVIEW_ENABLED`) and merged the duplicate `agent_start` handler, so the "Working…" placeholder is edited once. Behavior is unchanged: only final answers, plus tool failures (brief) or tool results (full); a reply still keeps the send lease taken when its text first streams.
+
 - The gateway's systemd service description now names Codex too: `agent2telegram gateway (Pi, Claude Code and Codex)`.
 
 - `a2t setup`: the questions now stay on screen in a terminal (readline's line refresh used to wipe them, leaving an empty line).

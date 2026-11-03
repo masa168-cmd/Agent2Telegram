@@ -59,7 +59,7 @@ npm run check:offline
 | 退出和故障 | 同上及 `forum-session.test.ts` | 只终止自建测试子进程；剩余接收者重选，旧话题不启动新 Pi；覆盖重复占用、失效代次、过期租约、话题删除、创建未知和迟到结果 |
 | 扩展入口联调 | `forum-entry.test.ts` | 真实 `index.ts` 接真实配置文件/游标、控制器、论坛层及模拟 fetch；从真实 polling batch 的 update 上下文 checkpoint，验证正文编辑、错误用户/话题、游标故障不转发、收件资格与发送资格分离 |
 | 文件与下载 | 同上、`forum-transport.test.ts`、上游附件测试 | 虚构下载保存到捕获 cwd，随机清理文件名；退出后迟到下载不写文件、不提示模型；输出/编辑/图片/typing 的 thread 围栏；不证明真实 Telegram 文件大小、权限和移动端体验 |
-| 助手正文流式 | `forum-streaming.test.ts` | token 路径不等待 Bot IO，1 秒限频、600 Unicode 字符预览、完整最终替换/长结果发送、secret-store 脱敏、旧消息不迁移到新代次；不证明真实网络的延迟或限流体验 |
+| 助手正文流式 | `forum-streaming.test.ts` | 流式期间不发消息，最终答案（含长结果）整条发送一次；带工具调用的回复及工具开始/进度不发；brief 下工具失败、full 下工具结果单独发送；secret-store 脱敏；旧消息不迁移到新代次；不证明真实网络的延迟或限流体验 |
 | UI 与敏感边界 | `forum-controller.test.ts`、`tui-broker.test.ts`、`tg-menu.test.ts` 等 | 非敏感本地/远程交互、先回答者生效、旧回调、禁止群 Shell、登录留 SSH、分享/退出确认及在线话题链接；不证明任意第三方 custom TUI 可读或安全 |
 | 上下文预算 | 上述 `context-budget-*.test.ts` 及命令/论坛入口测试 | 精确窗口/阈值与实例级方法恢复、普通设置保存后保持、持久数据和授权回归；不证明原生 TUI/真实 Telegram、账号容量或实际长输入 |
 | 上游回归 | 其他 `lib/core/__tests__/*.test.ts`、`lib/pi/__tests__/*.test.ts` | 原有命令、队列、渲染、Markdown、TUI adapters 等模块回归；其中 OMP mock 用例通过不转化为本 fork 的 OMP 支持承诺 |

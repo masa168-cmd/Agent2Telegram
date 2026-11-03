@@ -21,57 +21,25 @@ type AnyMessage = {
   provider?: string;
 };
 
-const TOOL_UPDATE_MS = 5000;
 const EDIT_LIMIT = 3500;
-export const STREAM_EDIT_MS = 1000;
-const STREAM_PREVIEW_CHARS = 600; // <= 3000 escaped UTF-8 bytes, even for '&' or emoji
-const PROCESS_CHARS = 600; // same byte bound for the merged process message
-// Telegram process summaries are intentionally hidden: final answers and explicit
-// tool results/errors are more useful and do not race each other in the chat.
-const PROCESS_MESSAGES_ENABLED = false;
-// The streaming "🤖 正在输出…" preview is off: while text streams it is unknown
-// whether a tool call follows, so intermediate notes flashed and were deleted.
-// Final answers are sent whole; Telegram's typing action shows Pi is working.
-const STREAM_PREVIEW_ENABLED = false;
+// Telegram gets each reply's final answer whole, nothing while text streams and
+// no merged "process" message (thinking, tool calls). Tool failures (brief) and
+// tool results (full) are still sent on their own. Telegram's typing action
+// shows Pi is working.
 
-function formatThinkingInline(part: Record<string, any>, level: TelegramRenderLevel): string {
-  if (level === "hidden") return "";
-  const text = part.redacted ? "[thinking redacted]" : String(part.thinking ?? "");
-  if (!text) return "";
-  if (level === "brief") {
-    const short = text.length > 200 ? text.slice(0, 197) + "…" : text;
-    return `💭 ${short}`;
-  }
-  return `💭 Thinking\n${text}`;
-}
-
-export function contentToRenderParts(
-  content: unknown,
-  thinkingLevel: TelegramRenderLevel = "brief",
-  toolLevel: TelegramRenderLevel = "brief",
-): { body: string; inlineEvents: string[] } {
-  if (typeof content === "string") return { body: content, inlineEvents: [] };
-  if (!Array.isArray(content)) return { body: "", inlineEvents: [] };
+/** The text of an assistant message; thinking and tool calls are not shown. */
+export function contentToRenderParts(content: unknown): { body: string } {
+  if (typeof content === "string") return { body: content };
+  if (!Array.isArray(content)) return { body: "" };
   const body: string[] = [];
-  const inlineEvents: string[] = [];
   for (const part of content) {
     if (!part || typeof part !== "object") continue;
     const p = part as Record<string, any>;
     if (p.type === "text") body.push(String(p.text ?? ""));
-    else if (p.type === "thinking") {
-      const inline = formatThinkingInline(p, thinkingLevel);
-      if (inline) inlineEvents.push(inline);
-    } else if (p.type === "toolCall") {
-      if (toolLevel === "hidden") continue;
-      const name = String(p.name ?? "tool");
-      inlineEvents.push(toolLevel === "brief"
-        ? formatToolBrief(name, p.arguments ?? {})
-        : `🔧 ${name}\n${stringifyShort(p.arguments ?? {}, 1200)}`);
-    }
   }
   // Multiple text parts (common when a turn interleaves text around tool calls)
   // are separated by a blank line so paragraphs don't run together on mobile.
-  return { body: body.filter(Boolean).join("\n\n"), inlineEvents };
+  return { body: body.filter(Boolean).join("\n\n") };
 }
 
 export function contentImages(content: unknown): Array<{ data: string; mimeType?: string }> {
@@ -219,11 +187,6 @@ function summarizeToolArgs(toolName: string, args: unknown, max = 96): string {
   return shortenSummary(text, max);
 }
 
-function formatToolBrief(toolName: string, args: unknown): string {
-  const summary = summarizeToolArgs(toolName, args);
-  return summary ? `🔧 ${toolName}: ${summary}` : `🔧 ${toolName}`;
-}
-
 function summarizeFailureText(text: string): string {
   const lines = text.split(/\r?\n/).map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean);
   if (lines.length === 0) return "";
@@ -268,12 +231,9 @@ export function registerTelegramRenderer(
     secrets?: SecretStore;
   },
 ): void {
-  const sentInlineEvents = new Set<string>();
-  const toolUpdateAt = new Map<string, number>();
   const toolArgs = new Map<string, unknown>();
-  type Preview = { chatId: number; threadId?: number; sourceId?: number; lease: unknown;
-    messageId?: number; lastAt: number; text: string; inFlight?: Promise<void> };
-  const previews = new Map<string, Preview>();
+  /** Send lease of each target's current reply, taken when its text first streams. */
+  const replyLeases = new Map<string, unknown>();
 
   /** §4.7.4: replace this chat's tracked secrets before any escaping happens. */
   const redactFor = (turn: TelegramTurn | undefined, text: string): string => {
@@ -315,8 +275,7 @@ export function registerTelegramRenderer(
   const maybeSendWorkflowNotice = async () => {
     if (workflowNoticeSent) return;
     workflowNoticeSent = true;
-    // A persistent line per workflow window (not an inline event — those are
-    // deduplicated per target and would swallow the next window's notice).
+    // A persistent line per workflow window.
     await sendNewToEventTarget("🤖 <b>Workflow running…</b>");
   };
 
@@ -383,104 +342,10 @@ export function registerTelegramRenderer(
     }
   };
 
-  // All process lines (thinking, tool calls) of one Telegram turn share one
-  // message that is edited in place; the final answer is sent separately.
-  type ProcessMessage = { chatId: number; threadId?: number; sourceId?: number; lines: string[];
-    messageId?: number; lastAt: number; dirty: boolean; scheduled: boolean; chain: Promise<void> };
-  const turnProcesses = new WeakMap<TelegramTurn, ProcessMessage>();
-  const defaultProcesses = new Map<string, ProcessMessage>();
-
-  const processFor = (keyPrefix: string): ProcessMessage | undefined => {
-    const turn = deps.getActiveTurn();
-    const existing = turn ? turnProcesses.get(turn) : defaultProcesses.get(keyPrefix);
-    if (existing) return existing;
-    const chatId = turn?.chatId ?? defaultChats()[0];
-    if (chatId === undefined) return undefined;
-    const created: ProcessMessage = { chatId, threadId: turn?.messageThreadId, sourceId: turn?.sourceMessageId,
-      lines: [], lastAt: -Infinity, dirty: false, scheduled: false, chain: Promise.resolve() };
-    if (turn) turnProcesses.set(turn, created); else defaultProcesses.set(keyPrefix, created);
-    return created;
-  };
-
-  const renderProcess = (lines: string[]): string => {
-    const chars = Array.from(lines.join("\n"));
-    const body = chars.length > PROCESS_CHARS ? `…\n${chars.slice(-PROCESS_CHARS).join("")}` : chars.join("");
-    return `<b>⚙️ 过程</b>\n<blockquote expandable>${escapeHtml(body)}</blockquote>`;
-  };
-
-  const flushProcess = (proc: ProcessMessage): Promise<void> => {
-    proc.dirty = true;
-    if (proc.scheduled) return proc.chain;
-    proc.scheduled = true;
-    proc.chain = proc.chain.then(async () => {
-      const wait = proc.messageId === undefined ? 0 : Math.max(0, proc.lastAt + STREAM_EDIT_MS - Date.now());
-      if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait));
-      proc.scheduled = false;
-      if (!proc.dirty) return;
-      proc.dirty = false;
-      const html = renderProcess(proc.lines);
-      proc.lastAt = Date.now();
-      if (proc.messageId !== undefined) {
-        try { await deps.transport.editText(proc.chatId, proc.messageId, html); return; }
-        catch (err) {
-          renderLog.debug("process edit failed; sending a new process message", { chatId: proc.chatId, err });
-          proc.messageId = undefined;
-        }
-      }
-      const sent = await deps.transport.sendText(proc.chatId, html, proc.threadId, proc.sourceId);
-      proc.messageId = sent[0]?.message_id;
-    }).catch(err => { proc.scheduled = false; renderLog.warn("process message delivery failed", { err }); });
-    return proc.chain;
-  };
-
-  /** Wait for pending process edits so the final answer lands below them. */
-  const settleProcess = async () => {
-    const turn = deps.getActiveTurn();
-    const keyPrefix = eventTargetKey();
-    const proc = turn ? turnProcesses.get(turn) : keyPrefix ? defaultProcesses.get(keyPrefix) : undefined;
-    await proc?.chain;
-  };
-
-  const sendInlineEvent = async (event: string) => {
-    if (!PROCESS_MESSAGES_ENABLED) return;
-    const keyPrefix = eventTargetKey();
-    if (!event || !keyPrefix) return;
-    // Inline events quote tool arguments and thinking text — exactly where a
-    // pasted key reappears, so redact before `escapeHtml` (§4.7.4).
-    const text = redactFor(deps.getActiveTurn(), event);
-    const key = `${keyPrefix}:${text}`;
-    if (sentInlineEvents.has(key)) return;
-    sentInlineEvents.add(key);
-    const proc = processFor(keyPrefix);
-    if (!proc) return;
-    proc.lines.push(text);
-    const pending = flushProcess(proc);
-    // Await only the first send; later edits are throttled in the background.
-    if (proc.messageId === undefined) await pending;
-  };
-
-  const sendInlineEvents = async (events: string[]) => {
-    for (const event of events) await sendInlineEvent(event);
-  };
-
   pi.on("agent_start", async () => {
     try {
-    sentInlineEvents.clear();
     toolArgs.clear();
-    toolUpdateAt.clear();
-    const turn = deps.getActiveTurn();
-    if (!turn) return;
-    if (turn.replaceMessageId !== undefined) await deps.transport.editText(turn.chatId, turn.replaceMessageId, "🤖 <b>Working…</b>");
-    } catch (err) { renderLog.warn("render status-clear handler failed", { err }); }
-  });
-
-  pi.on("agent_start", async () => {
-    try {
-    sentInlineEvents.clear();
-    toolArgs.clear();
-    toolUpdateAt.clear();
     workflowNoticeSent = false;
-    defaultProcesses.clear();
     const turn = deps.getActiveTurn();
     if (!turn) return;
     if (turn.replaceMessageId !== undefined) await deps.transport.editText(turn.chatId, turn.replaceMessageId, "🤖 <b>Working…</b>");
@@ -502,31 +367,10 @@ export function registerTelegramRenderer(
       await maybeSendWorkflowNotice();
       return;
     }
-    const level = renderLevel(deps.getConfig(), "tool");
-    if (level === "hidden") return;
+    // Remembered for the failure/result message at tool_execution_end.
+    if (renderLevel(deps.getConfig(), "tool") === "hidden") return;
     toolArgs.set(event.toolCallId, event.args);
-    const inline = level === "brief"
-      ? formatToolBrief(event.toolName, event.args)
-      : `🔧 ${event.toolName} started
-${stringifyShort(event.args, 1200)}`;
-    await sendInlineEvent(inline);
     } catch (err) { renderLog.warn("render tool_execution_start handler failed", { err }); }
-  });
-
-  pi.on("tool_execution_update", async (event) => {
-    try {
-    if (isBackgroundAgentActivity()) return;
-    const level = renderLevel(deps.getConfig(), "tool");
-    if (level !== "full") return;
-    const now = Date.now();
-    const last = toolUpdateAt.get(event.toolCallId) ?? 0;
-    if (now - last < TOOL_UPDATE_MS) return;
-    toolUpdateAt.set(event.toolCallId, now);
-    const partial = stringifyShort(event.partialResult, 700);
-    if (!partial || partial === "{}") return;
-    await sendInlineEvent(`🔄 ${event.toolName} update
-${partial}`);
-    } catch (err) { renderLog.warn("render tool_execution_update handler failed", { err }); }
   });
 
   pi.on("tool_execution_end", async (event) => {
@@ -541,15 +385,13 @@ ${partial}`);
       return;
     }
     const level = renderLevel(deps.getConfig(), "tool");
-    toolUpdateAt.delete(event.toolCallId);
     const args = toolArgs.get(event.toolCallId);
     toolArgs.delete(event.toolCallId);
     if (level === "hidden") return;
     const status = event.isError ? "❌ Tool failed" : "✅ Tool finished";
     if (level === "brief") {
       if (!event.isError) return;
-      // Failures remain visible, but as a normal standalone message rather than
-      // an entry in the hidden process summary.
+      // Failures remain visible as a standalone message.
       const failure = redactFor(deps.getActiveTurn(), formatToolFailureBrief(event.toolName, event.result, args));
       await sendNewToEventTarget(escapeHtml(failure));
       return;
@@ -581,46 +423,20 @@ ${partial}`);
   pi.on("message_start", event => {
     if (event.message.role !== "assistant" || isBackgroundAgentActivity()) return;
     const key = eventTargetKey();
-    if (key) previews.delete(key);
+    if (key) replyLeases.delete(key);
   });
 
+  // Nothing is sent while text streams. The first streamed text pins the reply
+  // to its send lease, so a session switch cannot move its final answer.
   pi.on("message_update", (event) => {
     if (event.message.role !== "assistant" || isBackgroundAgentActivity()) return;
     const key = eventTargetKey();
-    const turn = deps.getActiveTurn();
-    const chatId = turn?.chatId ?? defaultChats()[0];
-    if (!key || chatId === undefined) return;
+    const chatId = deps.getActiveTurn()?.chatId ?? defaultChats()[0];
+    if (!key || chatId === undefined || replyLeases.has(key)) return;
     const lease = deps.getSendLease?.();
     if (deps.getSendLease && lease === undefined) return;
-    const raw = redactFor(turn, contentToRenderParts(event.message.content, "hidden", "hidden").body);
-    if (!raw.trim()) return;
-    const chars = Array.from(raw);
-    const html = `<b>🤖 正在输出…</b>\n<pre>${chars.length > STREAM_PREVIEW_CHARS ? "…\n" : ""}${escapeHtml(chars.slice(-STREAM_PREVIEW_CHARS).join(""))}</pre>`;
-    let preview = previews.get(key);
-    if (preview && preview.lease !== lease) return; // wait for the next message_start, not a new destination
-    if (!preview) {
-      preview = { chatId, threadId: turn?.messageThreadId, sourceId: turn?.sourceMessageId,
-        lease, lastAt: -Infinity, text: "" };
-      previews.set(key, preview);
-    }
-    // Disabled preview: the record above still pins this reply to its original
-    // destination (lease), so a session switch cannot move its final answer.
-    if (!STREAM_PREVIEW_ENABLED) return;
-    const now = Date.now();
-    if (preview.inFlight || preview.text === html || now - preview.lastAt < STREAM_EDIT_MS) return;
-    preview.lastAt = now;
-    const state = preview;
-    state.inFlight = (async () => {
-      if (deps.getSendLease && state.lease !== deps.getSendLease()) return;
-      if (state.messageId !== undefined) await deps.transport.editText(state.chatId, state.messageId, html);
-      else {
-        const sent = await deps.transport.sendText(state.chatId, html, state.threadId, state.sourceId);
-        state.messageId = sent[0]?.message_id;
-      }
-      state.text = html;
-    })().catch(() => renderLog.warn("streaming preview delivery failed"))
-      .finally(() => { state.inFlight = undefined; });
-    // Do not await a Bot request on the model's token-event path.
+    if (!contentToRenderParts(event.message.content).body.trim()) return;
+    replyLeases.set(key, lease);
   });
 
   pi.on("message_end", async (event) => {
@@ -634,32 +450,16 @@ ${partial}`);
       await maybeSendWorkflowNotice();
       return;
     }
-    const previewKey = eventTargetKey();
-    const preview = previewKey ? previews.get(previewKey) : undefined;
-    if (previewKey) previews.delete(previewKey);
-    await preview?.inFlight;
-    if (preview && deps.getSendLease && preview.lease !== deps.getSendLease()) return;
-    const usablePreview = preview?.messageId !== undefined
-      && (!deps.getSendLease || preview.lease === deps.getSendLease()) ? preview : undefined;
-    const config = deps.getConfig();
-    const thinkingLevel = renderLevel(config, "thinking");
-    const toolLevel = renderLevel(config, "tool");
-    const rendered = contentToRenderParts(message.content, thinkingLevel, toolLevel);
-    // A reply that also calls tools is still part of the process: its text goes
-    // into the merged process message, not into a separate answer bubble.
+    const leaseKey = eventTargetKey();
+    const pinned = leaseKey !== undefined && replyLeases.has(leaseKey);
+    const lease = pinned ? replyLeases.get(leaseKey) : undefined;
+    if (leaseKey) replyLeases.delete(leaseKey);
+    if (pinned && deps.getSendLease && lease !== deps.getSendLease()) return;
+    // A reply that also calls tools is an intermediate step, not an answer.
     const isProcessStep = Array.isArray(message.content)
       && message.content.some((p) => (p as { type?: string } | null)?.type === "toolCall");
-    if (isProcessStep) {
-      const thinking = rendered.inlineEvents.filter((e) => e.startsWith("💭"));
-      const others = rendered.inlineEvents.filter((e) => !e.startsWith("💭"));
-      await sendInlineEvents(thinking);
-      if (rendered.body.trim()) await sendInlineEvent(`💬 ${rendered.body.trim()}`);
-      await sendInlineEvents(others);
-      if (usablePreview) await deps.transport.deleteMessage(usablePreview.chatId, usablePreview.messageId!).catch(() => undefined);
-      return;
-    }
-    await sendInlineEvents(rendered.inlineEvents);
-    await settleProcess();
+    if (isProcessStep) return;
+    const rendered = contentToRenderParts(message.content);
     // Redact the whole reply (prose *and* the oversized code blocks pulled out
     // of it below) before it is converted to HTML or sent as Markdown (§4.7.4).
     const rawBody = redactFor(deps.getActiveTurn(), rendered.body || message.errorMessage || "");
@@ -678,18 +478,7 @@ ${partial}`);
       // server without Rich Message support — keep the HTML path untouched.
       const richMarkdown = richMarkdownForTables(body);
       const html = markdownToTelegramHtml(body);
-      if (usablePreview && (richMarkdown || Buffer.byteLength(html) <= EDIT_LIMIT)) {
-        try { await deps.transport.editText(usablePreview.chatId, usablePreview.messageId!, html, richMarkdown); }
-        catch {
-          await sendToTurn(html, { final: true, richMarkdown });
-          await deps.transport.deleteMessage(usablePreview.chatId, usablePreview.messageId!).catch(() => undefined);
-        }
-      } else {
-        await sendToTurn(html, { final: true, richMarkdown });
-        if (usablePreview) await deps.transport.deleteMessage(usablePreview.chatId, usablePreview.messageId!).catch(() => undefined);
-      }
-    } else if (usablePreview) {
-      await deps.transport.deleteMessage(usablePreview.chatId, usablePreview.messageId!).catch(() => undefined);
+      await sendToTurn(html, { final: true, richMarkdown });
     }
 
     const turn = deps.getActiveTurn();

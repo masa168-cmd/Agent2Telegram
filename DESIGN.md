@@ -131,7 +131,7 @@ adapters/claude/        mod（钩子模块）+ 常驻网关（Node，systemd --u
 
 阶段 1 已完成第一步拆分：`lib/core/`（与 Agent 无关，24 个源文件；`core-boundary.test.ts` 禁止它引用 Pi 包或 `lib/core` 以外的文件）和 `lib/pi/`（Pi 专用，含 `tui/`、`commands/`、`context-budget/`）。数据目录统一由 `lib/core/data-dir.ts` 提供，Pi 默认仍是 `~/.pi/agent`。`forum-session`、`forum-transport`、`menu-commands`、`attachments` 仍有 Pi 依赖，留在 `lib/pi/`。4b 新增 `lib/gateway/`，原 `lib/claude/gateway/` 移入。
 
-拆分前的调查结论：`lib/` 顶层约 26 个文件、4,500 行不直接依赖 Pi，是 `telegram-core` 的候选。但其中 `config.ts` 写死了 `~/.pi/agent`，`forum-policy.ts` 引用了 Pi 的对话框模型，需要先改。`controller.ts`（1,882 行）同时负责消息路由、命令分发和 Pi 界面路由，是拆分的主要工作量。`lib/context-budget/` 与 Telegram 无关，应移出。
+拆分前的调查结论：`lib/` 顶层约 26 个文件、4,500 行不直接依赖 Pi，是 `telegram-core` 的候选。但其中 `config.ts` 写死了 `~/.pi/agent`，`forum-policy.ts` 引用了 Pi 的对话框模型，需要先改。`controller.ts`（1,882 行）同时负责消息路由、命令分发和 Pi 界面路由，是拆分的主要工作量。`lib/context-budget/` 与 Telegram 无关，应移出（11-03 决定保留，见第 6 节第 5 条）。
 
 ### 4.4 适配器接口
 
@@ -173,8 +173,8 @@ interface AgentAdapter {
 2. 一个 Bot 只给一个 Agent 用。**Claude 侧已实现（4a）**：网关启动时在 `~/.agent2telegram/bots/<token 哈希>.json` 登记归属，归属其他 Agent 或 Pi 运行目录里有存活实例在用这个 Bot 时拒绝接入；网关是唯一拉取者，第一次 409 视为交接 5 秒后重试，持续冲突则通知各会话并每分钟重试。4b 起网关对每个 Agent 都做同样的登记与检查（Pi 也一样）。
 3. `controller.ts` 职责混杂。
 4. ~~路径写死~~：已解决（打包与安装）。入口由 `a2t enable` 生成并指向安装目录，配置集中到 `~/.agent2telegram/`。
-5. `context-budget` 放在 tg 插件里。
-6. 关闭功能用的常量 `PROCESS_MESSAGES_ENABLED`、`STREAM_PREVIEW_ENABLED`，旧代码仍在。4b 调查发现预览记录还承担「最终答案发送租约」，删除需先补专门测试，暂缓。
+5. `context-budget` 放在 tg 插件里：11-03 决定保留、不移出。它借用插件捕获的 Pi 会话和 Telegram 操作核对来改压缩阈值，且是 Pi 1.4.0 的版本专用适配；移出需另做会话捕获并重新真机验收，功能上没有收益。
+6. ~~关闭功能用的常量 `PROCESS_MESSAGES_ENABLED`、`STREAM_PREVIEW_ENABLED`，旧代码仍在~~：已解决（11-03）。两个常量连同「⚙️ 过程」合并消息、流式预览的发送/编辑/删除一并删除，合并重复的 `agent_start` 处理；保留「最终答案发送租约」（回复首次流出文本时记录，结束时核对）。删除前先补行为测试。
 7. 界面中英文混用。
 8. 遗留：`scripts/e2e/run-e2e-commands.mjs` 已改为检查 Telegram 拒绝 `/quit`、`/exit`（该脚本需真实 Pi，未运行）。`forum-multiprocess.test.ts` 随 4b 删除多实例选主一并删除。
 9. 4b 收尾（11-02）：会话接入时网关先「重开」记录的话题——已关闭的重开，已删除的新建一次，其他错误（如网络）沿用原话题、不阻止接入；Pi 与 Claude 共用。一个 Agent 只能有一个 Bot：`addBot` 已有 Bot 时拒绝，Pi 的 `/tg → Bots` 只在没有 Bot 时显示「添加」，删除「默认 Bot」选择与清除、目录绑定到其他 Bot 的流程；目录绑定里旧的 `botId` 被忽略，Pi 与网关用同一规则选 Bot（默认，否则第一个）。
@@ -185,7 +185,7 @@ interface AgentAdapter {
 | 阶段 | 内容 | 验收 |
 |---|---|---|
 | 0 | 修配对：过期、次数上限、仅私聊 | 离线测试；现有 1194 项不回退 |
-| 1 | 在本仓库内整理目录：`lib/core/` 与 `lib/pi/`，不改行为；`config` 路径参数化；移出 `context-budget` | 离线测试全部通过；Pi 真机行为不变 |
+| 1 | 在本仓库内整理目录：`lib/core/` 与 `lib/pi/`，不改行为；`config` 路径参数化；移出 `context-budget`（11-03 决定不移出） | 离线测试全部通过；Pi 真机行为不变 |
 | 2 | Claude Code 最小原型：mod + sidecar，单目录、单话题，完成发任务、最终答案、中断、正在输入 | **已完成**（a1954ca；sidecar 已在 4a 由网关取代） |
 | 3 | Claude Code 补齐审批、命令、选择框（先答先得）、`/restart` | **已完成**（真机验收） |
 | 4a | Claude Code 多目录共用 Bot：常驻网关（systemd --user）、mod 直连网关、Bot 归属登记与 409 处理 | **已完成**（11-02 真机两目录验收） |

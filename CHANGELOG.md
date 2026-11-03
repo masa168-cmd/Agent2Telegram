@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- The gateway's systemd service description now names Codex too: `agent2telegram gateway (Pi, Claude Code and Codex)`.
+
 - `a2t setup`: the questions now stay on screen in a terminal (readline's line refresh used to wipe them, leaving an empty line).
 
 - Pi: the input-area command keyboard is gone (it popped up on its own on phones). The "已接入" notice now takes away a keyboard an older version left; a stale "📋 命令" tap only removes it. `sendText`'s `replyKeyboard` option is replaced by `removeKeyboard`.

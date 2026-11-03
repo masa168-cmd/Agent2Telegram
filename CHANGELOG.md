@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Removed the inherited end-to-end suites (`scripts/e2e/`, the `test:e2e*` npm scripts and the test of their pending list): they were written for the pre-gateway design (Pi polling Telegram itself, private chats, no forum topics) and no longer ran.
+
 - Pi renderer: a reply is pinned to its send lease when it starts, not only when text first streams, so a reply with no streamed text (an error, a non-streamed answer) is no longer sent to a new session's topic after a session switch.
 
 - Pi renderer: removed the switched-off merged "⚙️ 过程" message and streaming "🤖 正在输出…" preview code (`PROCESS_MESSAGES_ENABLED`, `STREAM_PREVIEW_ENABLED`) and merged the duplicate `agent_start` handler, so the "Working…" placeholder is edited once. Behavior is unchanged: only final answers, plus tool failures (brief) or tool results (full); a reply still keeps the send lease taken when its text first streams.

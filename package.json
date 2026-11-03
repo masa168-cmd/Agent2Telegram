@@ -32,18 +32,10 @@
     "test": "vitest run",
     "check:offline": "node scripts/offline-check.mjs",
     "test:watch": "vitest",
-    "test:e2e": "node scripts/e2e/run-e2e.mjs",
-    "test:e2e:omp": "node scripts/e2e/run-e2e-omp.mjs",
-    "test:e2e:tui-bridge": "node scripts/e2e/run-e2e-tui-bridge.mjs",
-    "test:e2e:commands": "node scripts/e2e/run-e2e-commands.mjs",
-    "test:e2e:dialogs": "node scripts/e2e/run-e2e-dialogs.mjs",
-    "test:e2e:state": "node scripts/e2e/run-e2e-state.mjs",
     "changelog:draft": "node scripts/changelog-draft.mjs",
     "changelog:roll": "node scripts/changelog-version.mjs",
     "changelog:check": "node scripts/changelog-version.mjs --check",
-    "prepublishOnly": "npm test && npm run typecheck && npm run changelog:check",
-    "test:e2e:real": "node scripts/e2e/real-telegram-smoke.mjs",
-    "test:e2e:parity": "node scripts/e2e/audit-parity.mjs"
+    "prepublishOnly": "npm test && npm run typecheck && npm run changelog:check"
   },
   "pi": {
     "extensions": [

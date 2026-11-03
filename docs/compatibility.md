@@ -86,7 +86,7 @@ npm run check:offline
 ## 明确未做与已知遗留项
 
 - 未将扩展装载到当前 Pi，未执行真实 native TUI/手机/Bot/模型验收，未更改现有 Pi、SSH、tmux 或服务生命周期。
-- 未跑继承的 `test:e2e*`。这些脚本可能创建 tmux、运行 Pi/OMP 或请求外部服务；`test:e2e:real` 会操作真实 Bot，必须另行审批。
+- 继承的 `test:e2e*` 脚本（`scripts/e2e/`）按 4b 前架构编写，已于 11-03 删除；Pi 与 Telegram 以真机验收为准。
 - `/share` 的真实上传、`/quit` 的真实退出、外部协作命令及任何部署不属于离线证明。
 - 继承的 `/cd` helper 含上游的私有 SessionManager `_rewriteFile` 调用，本轮未执行或验收它。论坛绑定自身不使用该私有接口；更换 cwd 建议通过 SSH 启动/恢复所需 Pi，不把该遗留 helper 宣称为公开 API 兼容保证。
 - 原 plus 内部路径/日志环境变量、部分上游设计文档和适配标识有意保留，不做批量替换；根 README 和本文优先于历史材料。

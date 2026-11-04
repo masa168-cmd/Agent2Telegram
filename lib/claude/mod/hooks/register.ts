@@ -111,15 +111,51 @@ function describeInput(tool: string, input: unknown): string {
 }
 
 function formatReset(iso: string | undefined): string {
-  return iso ? `，${iso.slice(5, 16).replace('T', ' ')} UTC 重置` : ''
+  const time = iso ? Date.parse(iso) : NaN
+  if (Number.isNaN(time)) return ''
+  return `，${new Date(Math.round(time / 60_000) * 60_000).toISOString().slice(5, 16).replace('T', ' ')} UTC 重置`
+}
+
+const LIMIT_NAMES: Record<string, string> = {
+  five_hour: '当前 5 小时', seven_day: '本周（全部模型）', seven_day_sonnet: '本周（Sonnet）', seven_day_opus: '本周（Opus）',
+}
+
+/**
+ * The plan's limit windows, read where the terminal's /usage reads them (an
+ * undocumented endpoint; the engine adds the login, the plugin never sees it).
+ * Undefined when it gives nothing usable.
+ */
+async function planLimits($: EngineInterface): Promise<string[] | undefined> {
+  try {
+    const auth = await $.session.authorize()
+    if (auth?.kind !== 'bearer') return undefined
+    const res = await $.http.fetch('https://api.anthropic.com/api/oauth/usage', {
+      auth: auth.handle, headers: { 'content-type': 'application/json', 'anthropic-beta': 'oauth-2025-04-20' },
+    })
+    if (!res.ok) {
+      $.ui.log(`agent2telegram: usage endpoint answered ${res.status}`, { to: 'debug' })
+      return undefined
+    }
+    const body = JSON.parse(res.text) as Record<string, { utilization?: unknown; resets_at?: unknown } | null | undefined>
+    const lines = Object.entries(LIMIT_NAMES).flatMap(([key, name]) => {
+      const window = body[key]
+      if (typeof window?.utilization !== 'number') return []
+      const reset = typeof window.resets_at === 'string' ? window.resets_at : undefined
+      return [`${name}：已用 ${Math.round(window.utilization)}%${formatReset(reset)}`]
+    })
+    return lines.length > 0 ? lines : undefined
+  } catch (error) {
+    $.ui.log(`agent2telegram: usage endpoint: ${String(error)}`, { to: 'debug' })
+    return undefined
+  }
 }
 
 async function usageText($: EngineInterface): Promise<string> {
-  const usage = await $.session.usage()
-  const names: Record<string, string> = { five_hour: '当前 5 小时', seven_day: '本周（全部模型）' }
-  const lines = usage.rateLimits.map(l => `${names[l.kind] ?? l.kind}：已用 ${l.percentUsed}%${formatReset(l.resetsAt)}`)
+  const [usage, plan] = await Promise.all([$.session.usage(), planLimits($)])
+  const lines = plan ?? usage.rateLimits.map(l => `${LIMIT_NAMES[l.kind] ?? l.kind}：已用 ${l.percentUsed}%${formatReset(l.resetsAt)}`)
+  if (lines.length === 0) lines.push('额度百分比暂时取不到，请在终端用 /usage 查看。')
   if (usage.cost) lines.push(`本会话花费：$${usage.cost.usd.toFixed(4)}`)
-  return lines.length > 0 ? lines.join('\n') : '暂时没有用量数据（本会话发出第一条消息后才有）。'
+  return lines.join('\n')
 }
 
 function notice($: EngineInterface, text: string): Promise<unknown> {

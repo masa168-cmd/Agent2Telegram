@@ -64,7 +64,7 @@ a2t enable codex    # 该目录在终端里运行的 Codex 会话约 5 秒内自
 
 在对应目录的话题里直接发文字，就是给 Agent 发任务；回合结束后最终回复发回话题，工作期间显示「正在输入…」。
 
-图片：Pi 和 Claude Code 能收（可带说明文字）。Claude Code 的图片由网关存到 `~/.agent2telegram/cache/uploads/<目录名>/`（不自动清理），再把文件路径连同说明文字交给 Claude 查看；一次发多张（相册）合成一条，最后一张到后约 5 秒交出，收满 10 张立即交出。Codex 暂不收图片；文件、语音、视频等发给 Claude Code 或 Codex 时，话题里会提示「暂不支持」。
+图片和文件：Pi 和 Claude Code 能收（可带说明文字）。Claude Code 收到的图片和文件由网关存到 `~/.agent2telegram/cache/uploads/<目录名>/`（不自动清理；文件名只保留英文字母、数字和 `._-`，原名写在提示里），再把路径连同说明文字交给 Claude 查看；一次发多个（相册）合成一条，最后一个到后约 5 秒交出，收满 10 个立即交出。超过 20 MB 的文件 Telegram 不允许机器人下载，话题里会提示。Codex 暂不收图片和文件；语音、视频、音频等发给 Claude Code 或 Codex 时，话题里会提示「暂不支持」。
 
 **Claude Code** 话题里的 `/` 菜单：
 

@@ -34,17 +34,29 @@ function log(text: string): void {
   process.stdout.write(`${new Date().toISOString()} ${text}\n`);
 }
 
-/** A Telegram photo for Claude Code, saved where Pi keeps uploads: ~/.agent2telegram/cache/uploads/<launch dir name>/. */
-async function saveTelegramPhoto(config: TelegramConfig, cwd: string, fileId: string, signal: AbortSignal): Promise<string> {
+/** A name without its extension, kept to ASCII letters, digits and `._-` (as Pi names uploads). */
+function safeName(value: string, fallback: string): string {
+  return value.trim().replace(/\.[^./\\]+$/, "").replace(/[^a-zA-Z0-9._-]/g, "_").replace(/_+/g, "_")
+    .replace(/^\.+/, "").replace(/\.+$/, "").slice(0, 120) || fallback;
+}
+
+/**
+ * A Telegram photo or file for Claude Code, saved where Pi keeps uploads:
+ * ~/.agent2telegram/cache/uploads/<launch dir name>/. A file keeps a cleaned
+ * form of its name and its extension.
+ */
+async function saveTelegramFile(config: TelegramConfig, cwd: string, fileId: string, fileName: string | undefined,
+  signal: AbortSignal): Promise<string> {
   const token = config.botToken;
   if (!token) throw new Error("Bot 未配置");
   const info = await getTelegramFile(token, fileId, signal, config.apiBase);
   const data = await downloadTelegramFile(token, info.file_path, signal, config.apiBase);
-  const name = basename(resolve(cwd)).replace(/\.[^./\\]+$/, "").replace(/[^a-zA-Z0-9._-]/g, "_").replace(/_+/g, "_")
-    .replace(/^\.+/, "").replace(/\.+$/, "").slice(0, 120) || "root";
-  const dir = join(a2tCacheDir(), "uploads", name);
+  const dir = join(a2tCacheDir(), "uploads", safeName(basename(resolve(cwd)), "root"));
   await mkdir(dir, { recursive: true, mode: 0o700 });
-  const path = join(dir, `${Date.now()}-${randomUUID().slice(0, 8)}-photo${extname(info.file_path).toLowerCase() || ".jpg"}`);
+  const ext = extname(fileName || info.file_path).toLowerCase();
+  const safeExt = /^\.[a-z0-9]{1,10}$/.test(ext) ? ext : fileName ? "" : ".jpg";
+  const base = fileName ? safeName(fileName, "file") : "photo";
+  const path = join(dir, `${Date.now()}-${randomUUID().slice(0, 8)}-${base}${safeExt}`);
   await writeFile(path, data, { flag: "wx", mode: 0o600 });
   return path;
 }
@@ -159,7 +171,7 @@ async function serveAgent(spec: AgentSpec, stopping: () => boolean, onStop: Arra
     transport: createTelegramTransport(() => config, { getAbortSignal: () => abort.signal }),
     // The gateway is not in the agent's process tree, so the helper outlives it.
     ...(spec.agent === "claude" ? {
-      savePhoto: (cwd: string, fileId: string) => saveTelegramPhoto(config, cwd, fileId, abort.signal),
+      saveFile: (cwd: string, fileId: string, fileName?: string) => saveTelegramFile(config, cwd, fileId, fileName, abort.signal),
       startRestart: (job: object) => {
         spawn(process.execPath, [helper, JSON.stringify({ ...job, logPath: join(runtimeDir(spec.dataDir), "restart.jsonl") })],
           { detached: true, stdio: "ignore" }).unref();

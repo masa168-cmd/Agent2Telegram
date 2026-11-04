@@ -81,8 +81,11 @@ export type GatewayDeps = {
   commands?: readonly MenuCommand[];
   /** Only enabled directories get a topic (`a2t enable claude`); all when left out. */
   isEnabled?: (cwd: string) => boolean;
-  /** Thin mode: download a photo for the session in `cwd`, returning its local path. Left out: photos get a notice. */
-  savePhoto?: (cwd: string, fileId: string) => Promise<string>;
+  /**
+   * Thin mode: download a photo or file for the session in `cwd`, returning its
+   * local path (`fileName`: a file's own name). Left out: both get a notice.
+   */
+  saveFile?: (cwd: string, fileId: string, fileName?: string) => Promise<string>;
   /** How long an album waits for its next item (default ALBUM_WAIT_MS). */
   albumWaitMs?: number;
   now?: () => number;
@@ -105,8 +108,11 @@ function mediaOf(message: TelegramMessage): keyof TelegramMessage | undefined {
  */
 const ALBUM_WAIT_MS = 5_000;
 const ALBUM_MAX_ITEMS = 10;
+/** The Bot API's limit on what a bot can download. */
+const DOWNLOAD_LIMIT_BYTES = 20 * 1024 * 1024;
 
-type MediaItem = { media: keyof TelegramMessage; fileId?: string };
+/** `fileId`: a photo or file the client can take; `fileName` and `size` for a file. */
+type MediaItem = { media: keyof TelegramMessage; fileId?: string; fileName?: string; size?: number };
 type MediaBatch = { session: Session; chatId: number; threadId: number; captions: string[]; items: MediaItem[] };
 
 /** Pi's older store may hold `threadId: null` for a create whose result was unknown: read as absent. */
@@ -435,7 +441,10 @@ export class BotGateway {
   private async promptWithMedia(session: Session, chatId: number, threadId: number, message: TelegramMessage,
     media: keyof TelegramMessage, caption: string): Promise<void> {
     const photo = message.photo?.reduce((best, current) => (current.file_size ?? -1) > (best.file_size ?? -1) ? current : best);
-    const item: MediaItem = media === "photo" && photo ? { media, fileId: photo.file_id } : { media };
+    const doc = message.document;
+    const item: MediaItem = media === "photo" && photo ? { media, fileId: photo.file_id }
+      : media === "document" && doc ? { media, fileId: doc.file_id, fileName: doc.file_name, size: doc.file_size }
+      : { media };
     const group = message.media_group_id;
     if (group === undefined) {
       await this.deliverMedia({ session, chatId, threadId, captions: [caption], items: [item] });
@@ -452,23 +461,28 @@ export class BotGateway {
     else album.timer = setTimeout(() => void flush().catch(() => undefined), this.deps.albumWaitMs ?? ALBUM_WAIT_MS);
   }
 
-  /** Photos become one prompt naming their local files (with the captions); other media only get a notice. */
+  /** Photos and files become one prompt naming their local copies (with the captions); other media only get a notice. */
   private async deliverMedia({ session, chatId, threadId, captions, items }: MediaBatch): Promise<void> {
     if (this.sessions.get(session.connId) !== session) return;
-    const save = this.deps.savePhoto;
-    const photos = save ? items.filter(item => item.fileId !== undefined) : [];
-    const skipped = [...new Set(items.filter(item => !photos.includes(item))
+    const save = this.deps.saveFile;
+    const files = save ? items.filter(item => item.fileId !== undefined) : [];
+    const skipped = [...new Set(items.filter(item => !files.includes(item))
       .map(item => MEDIA_LABELS.find(([field]) => field === item.media)?.[1] ?? "这类消息"))];
     const notices: string[] = [];
-    if (skipped.length > 0) notices.push(`${this.label} 暂不支持${skipped.join("、")}，${photos.length > 0 ? "已跳过" : "本条未处理"}。`);
-    const saved = await Promise.allSettled(photos.map(photo => save!(session.cwd, photo.fileId!)));
+    if (skipped.length > 0) notices.push(`${this.label} 暂不支持${skipped.join("、")}，${files.length > 0 ? "已跳过" : "本条未处理"}。`);
+    const saved = await Promise.allSettled(files.map(file => (file.size ?? 0) > DOWNLOAD_LIMIT_BYTES
+      ? Promise.reject(new Error(`文件太大（${(file.size! / 1024 / 1024).toFixed(1)} MB），Telegram 只允许机器人下载 20 MB 以内的文件`))
+      : save!(session.cwd, file.fileId!, file.fileName)));
     const lines: string[] = [];
     saved.forEach((result, index) => {
-      const which = photos.length > 1 ? ` ${index + 1}/${photos.length}` : "";
-      if (result.status === "fulfilled") lines.push(`[Telegram 图片${which}] ${result.value}`);
+      const file = files[index]!;
+      const kind = file.media === "photo" ? "图片" : "文件";
+      const which = files.length > 1 ? ` ${index + 1}/${files.length}` : "";
+      if (result.status === "fulfilled") lines.push(`[Telegram ${kind}${which}] ${file.fileName ? `${file.fileName} → ` : ""}${result.value}`);
       else {
         const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
-        notices.push(photos.length > 1 ? `第${which} 张图片下载失败：${reason}` : `图片下载失败，本条未处理：${reason}`);
+        const unit = file.media === "photo" ? "张" : "个";
+        notices.push(files.length > 1 ? `第${which} ${unit}${kind}下载失败：${reason}` : `${kind}下载失败，本条未处理：${reason}`);
       }
     });
     if (lines.length > 0) this.push(session, { type: "prompt", text: [...captions, ...lines].filter(Boolean).join("\n") });

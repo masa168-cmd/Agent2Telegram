@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Claude Code topics take photos: the gateway saves the largest size to `~/.agent2telegram/cache/uploads/<launch dir name>/` (as Pi does, not cleaned up) and prompts with the caption plus `[Telegram 图片] <path>`. An album (one `media_group_id`) becomes one prompt with `[Telegram 图片 i/n] <path>` lines: the gateway waits 5 s after each item for the next (Telegram does not say how many there are), at once when it reaches 10 items; a failed item is named and the rest still go through. Thin-mode topics used to drop any message without text silently (a photo and its caption were lost); now other media (file, video, audio, voice, animation, sticker), and photos for Codex, get a "暂不支持…" notice, and a failed download says so.
+
 - Removed the inherited end-to-end suites (`scripts/e2e/`, the `test:e2e*` npm scripts and the test of their pending list): they were written for the pre-gateway design (Pi polling Telegram itself, private chats, no forum topics) and no longer ran.
 
 - Pi renderer: a reply is pinned to its send lease when it starts, not only when text first streams, so a reply with no streamed text (an error, a non-streamed answer) is no longer sent to a new session's topic after a session switch.

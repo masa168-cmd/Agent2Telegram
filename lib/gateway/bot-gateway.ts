@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { forumBotId, forumTopicKey, forumTopicName } from "../core/forum-binding.ts";
 import { escapeHtml } from "../core/html.ts";
 import { markdownToTelegramHtml } from "../core/markdown.ts";
-import type { TelegramConfig, TelegramTransport, TelegramUpdate } from "../core/types.ts";
+import type { TelegramConfig, TelegramMessage, TelegramTransport, TelegramUpdate } from "../core/types.ts";
 import { runtimeDir } from "./paths.ts";
 import type { RestartJob } from "./restart-helper.ts";
 
@@ -81,9 +81,33 @@ export type GatewayDeps = {
   commands?: readonly MenuCommand[];
   /** Only enabled directories get a topic (`a2t enable claude`); all when left out. */
   isEnabled?: (cwd: string) => boolean;
+  /** Thin mode: download a photo for the session in `cwd`, returning its local path. Left out: photos get a notice. */
+  savePhoto?: (cwd: string, fileId: string) => Promise<string>;
+  /** How long an album waits for its next item (default ALBUM_WAIT_MS). */
+  albumWaitMs?: number;
   now?: () => number;
   typingIntervalMs?: number;
 };
+
+/** Media a thin client cannot take yet, by the field Telegram sets. */
+const MEDIA_LABELS: ReadonlyArray<[keyof TelegramMessage, string]> = [
+  ["photo", "图片"], ["document", "文件"], ["video", "视频"], ["audio", "音频"],
+  ["voice", "语音"], ["animation", "动图"], ["sticker", "贴纸"],
+];
+
+function mediaOf(message: TelegramMessage): keyof TelegramMessage | undefined {
+  return MEDIA_LABELS.find(([field]) => message[field] !== undefined)?.[0];
+}
+
+/**
+ * Telegram never says how many items an album has: wait this long after each
+ * item for the next, unless the album is already at Telegram's limit.
+ */
+const ALBUM_WAIT_MS = 5_000;
+const ALBUM_MAX_ITEMS = 10;
+
+type MediaItem = { media: keyof TelegramMessage; fileId?: string };
+type MediaBatch = { session: Session; chatId: number; threadId: number; captions: string[]; items: MediaItem[] };
 
 /** Pi's older store may hold `threadId: null` for a create whose result was unknown: read as absent. */
 type TopicStore = { version: 1; topics: Record<string, { threadId: number | null; cwd: string; updatedAt: string; state?: string }> };
@@ -140,6 +164,8 @@ function defaultPidAlive(pid: number): boolean {
 export class BotGateway {
   private readonly sessions = new Map<string, Session>();
   private readonly pending = new Map<string, Pending>();
+  /** Albums still collecting, by connection and media group. */
+  private readonly albums = new Map<string, MediaBatch & { timer?: ReturnType<typeof setTimeout> }>();
   /** Claude sessions that asked for /restart: say "restarted" when they open again. */
   private readonly restarting = new Set<string>();
 
@@ -374,12 +400,17 @@ export class BotGateway {
 
     if (chatId !== config.forumChatId || userId === undefined || userId !== config.allowedUserId) return;
     const threadId = message.message_thread_id;
-    const text = message.text?.trim();
-    if (threadId === undefined || !text) return;
+    const media = mediaOf(message);
+    const text = (message.text ?? message.caption)?.trim() ?? "";
+    if (threadId === undefined || (!text && !media)) return;
     const session = this.sessionForThread(threadId);
     if (!session) {
       const cwd = await this.topicCwd(threadId);
       if (cwd) await this.deps.transport.sendText(chatId, escapeHtml(`目录 ${cwd} 现在没有在线的 ${this.label} 会话，本条未处理。`), threadId);
+      return;
+    }
+    if (media) {
+      await this.promptWithMedia(session, chatId, threadId, message, media, text);
       return;
     }
     for (const [id, entry] of this.pending) {
@@ -398,6 +429,50 @@ export class BotGateway {
       if (session.pane && session.pid !== undefined) this.push(session, { type: "restart" });
       else await this.deps.transport.sendText(chatId, RESTART_NEEDS_TMUX_TEXT, threadId);
     } else this.push(session, { type: "prompt", text });
+  }
+
+  /** One message, or one item of an album: an album is collected first and handled as one message. */
+  private async promptWithMedia(session: Session, chatId: number, threadId: number, message: TelegramMessage,
+    media: keyof TelegramMessage, caption: string): Promise<void> {
+    const photo = message.photo?.reduce((best, current) => (current.file_size ?? -1) > (best.file_size ?? -1) ? current : best);
+    const item: MediaItem = media === "photo" && photo ? { media, fileId: photo.file_id } : { media };
+    const group = message.media_group_id;
+    if (group === undefined) {
+      await this.deliverMedia({ session, chatId, threadId, captions: [caption], items: [item] });
+      return;
+    }
+    const key = `${session.connId}\n${group}`;
+    const album = this.albums.get(key) ?? { session, chatId, threadId, captions: [], items: [] };
+    this.albums.set(key, album);
+    album.captions.push(caption);
+    album.items.push(item);
+    clearTimeout(album.timer);
+    const flush = () => { this.albums.delete(key); return this.deliverMedia(album); };
+    if (album.items.length >= ALBUM_MAX_ITEMS) await flush();
+    else album.timer = setTimeout(() => void flush().catch(() => undefined), this.deps.albumWaitMs ?? ALBUM_WAIT_MS);
+  }
+
+  /** Photos become one prompt naming their local files (with the captions); other media only get a notice. */
+  private async deliverMedia({ session, chatId, threadId, captions, items }: MediaBatch): Promise<void> {
+    if (this.sessions.get(session.connId) !== session) return;
+    const save = this.deps.savePhoto;
+    const photos = save ? items.filter(item => item.fileId !== undefined) : [];
+    const skipped = [...new Set(items.filter(item => !photos.includes(item))
+      .map(item => MEDIA_LABELS.find(([field]) => field === item.media)?.[1] ?? "这类消息"))];
+    const notices: string[] = [];
+    if (skipped.length > 0) notices.push(`${this.label} 暂不支持${skipped.join("、")}，${photos.length > 0 ? "已跳过" : "本条未处理"}。`);
+    const saved = await Promise.allSettled(photos.map(photo => save!(session.cwd, photo.fileId!)));
+    const lines: string[] = [];
+    saved.forEach((result, index) => {
+      const which = photos.length > 1 ? ` ${index + 1}/${photos.length}` : "";
+      if (result.status === "fulfilled") lines.push(`[Telegram 图片${which}] ${result.value}`);
+      else {
+        const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
+        notices.push(photos.length > 1 ? `第${which} 张图片下载失败：${reason}` : `图片下载失败，本条未处理：${reason}`);
+      }
+    });
+    if (lines.length > 0) this.push(session, { type: "prompt", text: [...captions, ...lines].filter(Boolean).join("\n") });
+    if (notices.length > 0) await this.deps.transport.sendText(chatId, escapeHtml(notices.join("\n")), threadId);
   }
 
   /**

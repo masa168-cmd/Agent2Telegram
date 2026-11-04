@@ -122,6 +122,8 @@ export type TelegramMessage = {
   message_thread_id?: number;
   text?: string;
   caption?: string;
+  /** Shared by the messages of one album (Telegram sends each item as its own message). */
+  media_group_id?: string;
   photo?: TelegramPhotoSize[];
   document?: TelegramDocument;
   video?: TelegramDocument;

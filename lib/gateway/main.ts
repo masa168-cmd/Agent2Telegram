@@ -6,17 +6,19 @@
 //   Codex       → no client of its own: the gateway drives Codex's app-server (codex.ts)
 // See bot-gateway.ts for the session protocol.
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "../core/data-dir.ts";
-import { createTelegramTransport, getTelegramUpdates, telegramApi } from "../core/telegram-api.ts";
+import { createTelegramTransport, downloadTelegramFile, getTelegramFile, getTelegramUpdates, telegramApi } from "../core/telegram-api.ts";
 import { telegramTokenHash } from "../core/forum-binding.ts";
 import type { BotRecord, TelegramConfig } from "../core/types.ts";
 import { BotGateway, type MenuCommand } from "./bot-gateway.ts";
 import { CODEX_COMMANDS, CodexBridge, connectCodex } from "./codex.ts";
-import { agentDataDir } from "../core/a2t-home.ts";
+import { a2tCacheDir, agentDataDir } from "../core/a2t-home.ts";
 import { isClaudeProjectEnabled } from "./claude-projects.ts";
 import { claimBot, type AgentName } from "./ownership.ts";
 import { claudeTelegramDir, runtimeDir } from "./paths.ts";
@@ -30,6 +32,21 @@ const CONFLICT_RETRY_MS = 60_000;
 
 function log(text: string): void {
   process.stdout.write(`${new Date().toISOString()} ${text}\n`);
+}
+
+/** A Telegram photo for Claude Code, saved where Pi keeps uploads: ~/.agent2telegram/cache/uploads/<launch dir name>/. */
+async function saveTelegramPhoto(config: TelegramConfig, cwd: string, fileId: string, signal: AbortSignal): Promise<string> {
+  const token = config.botToken;
+  if (!token) throw new Error("Bot 未配置");
+  const info = await getTelegramFile(token, fileId, signal, config.apiBase);
+  const data = await downloadTelegramFile(token, info.file_path, signal, config.apiBase);
+  const name = basename(resolve(cwd)).replace(/\.[^./\\]+$/, "").replace(/[^a-zA-Z0-9._-]/g, "_").replace(/_+/g, "_")
+    .replace(/^\.+/, "").replace(/\.+$/, "").slice(0, 120) || "root";
+  const dir = join(a2tCacheDir(), "uploads", name);
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const path = join(dir, `${Date.now()}-${randomUUID().slice(0, 8)}-photo${extname(info.file_path).toLowerCase() || ".jpg"}`);
+  await writeFile(path, data, { flag: "wx", mode: 0o600 });
+  return path;
 }
 
 function toConfig(bot: BotRecord): TelegramConfig {
@@ -142,6 +159,7 @@ async function serveAgent(spec: AgentSpec, stopping: () => boolean, onStop: Arra
     transport: createTelegramTransport(() => config, { getAbortSignal: () => abort.signal }),
     // The gateway is not in the agent's process tree, so the helper outlives it.
     ...(spec.agent === "claude" ? {
+      savePhoto: (cwd: string, fileId: string) => saveTelegramPhoto(config, cwd, fileId, abort.signal),
       startRestart: (job: object) => {
         spawn(process.execPath, [helper, JSON.stringify({ ...job, logPath: join(runtimeDir(spec.dataDir), "restart.jsonl") })],
           { detached: true, stdio: "ignore" }).unref();

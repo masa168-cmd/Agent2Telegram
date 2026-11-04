@@ -18,7 +18,7 @@ afterEach(() => {
 
 function setup(initial: TelegramConfig = { botToken: TOKEN, forumChatId: CHAT, allowedUserId: USER },
   options: { dataDir?: string; alive?: (pid: number) => boolean; isEnabled?: (cwd: string) => boolean;
-    rich?: boolean; topicsPath?: string } = {}) {
+    rich?: boolean; topicsPath?: string; savePhoto?: (cwd: string, fileId: string) => Promise<string> } = {}) {
   const dataDir = options.dataDir ?? mkdtempSync(join(tmpdir(), "claude-gateway-"));
   if (!options.dataDir) dirs.push(dataDir);
   let config: TelegramConfig = { ...initial };
@@ -56,6 +56,7 @@ function setup(initial: TelegramConfig = { botToken: TOKEN, forumChatId: CHAT, a
     ...(options.isEnabled ? { isEnabled: options.isEnabled } : {}),
     ...(options.rich ? { mode: "rich" as const, agentLabel: "Pi" } : {}),
     ...(options.topicsPath ? { topicsPath: options.topicsPath } : {}),
+    ...(options.savePhoto ? { savePhoto: options.savePhoto } : {}),
     typingIntervalMs: 1_000,
   });
   return { gateway, dataDir, sent, buttons, api, sendText, sendChatAction, editText, answerCallbackQuery, startRestart,
@@ -66,6 +67,13 @@ function topicMessage(text: string, threadId = 77, from = USER): TelegramUpdate 
   return { update_id: 1, message: { message_id: 5, chat: { id: CHAT, type: "supergroup" }, from: { id: from },
     message_thread_id: threadId, text } } as TelegramUpdate;
 }
+
+function mediaMessage(fields: Record<string, unknown>, threadId = 77): TelegramUpdate {
+  return { update_id: 2, message: { message_id: 6, chat: { id: CHAT, type: "supergroup" }, from: { id: USER },
+    message_thread_id: threadId, ...fields } } as TelegramUpdate;
+}
+
+const PHOTO = { photo: [{ file_id: "small", file_size: 100 }, { file_id: "large", file_size: 900 }, { file_id: "mid", file_size: 400 }] };
 
 function tap(data: string, from = USER): TelegramUpdate {
   return { update_id: 3, callback_query: { id: "cb1", data, from: { id: from },
@@ -233,6 +241,143 @@ describe("BotGateway sessions and topics", () => {
     t.gateway.reap();
     expect(t.gateway.sessionCount).toBe(0);
     expect(await t.gateway.poll("a", 0)).toEqual({ unknown: true });
+  });
+});
+
+describe("BotGateway media (thin)", () => {
+  it("saves the largest photo and prompts with the caption and its path", async () => {
+    const savePhoto = vi.fn(async (_cwd: string, fileId: string) => `/cache/uploads/alpha/${fileId}.jpg`);
+    const t = setup(undefined, { savePhoto });
+    await t.gateway.open({ connId: "a", cwd: "/work/alpha" });
+    await t.gateway.handleUpdate(mediaMessage({ ...PHOTO, caption: " what is this? " }));
+    expect(savePhoto).toHaveBeenCalledWith("/work/alpha", "large");
+    expect(await events(t.gateway, "a")).toEqual([{ type: "prompt", text: "what is this?\n[Telegram 图片] /cache/uploads/alpha/large.jpg" }]);
+    expect(t.sent).toEqual([]);
+  });
+
+  it("prompts with the path alone for a photo without a caption", async () => {
+    const t = setup(undefined, { savePhoto: async () => "/cache/p.jpg" });
+    await t.gateway.open({ connId: "a", cwd: "/work/alpha" });
+    await t.gateway.handleUpdate(mediaMessage(PHOTO));
+    expect(await events(t.gateway, "a")).toEqual([{ type: "prompt", text: "[Telegram 图片] /cache/p.jpg" }]);
+  });
+
+  it("says so in the topic when the download fails, and sends no prompt", async () => {
+    const t = setup(undefined, { savePhoto: async () => { throw new Error("404"); } });
+    await t.gateway.open({ connId: "a", cwd: "/work/alpha" });
+    await t.gateway.handleUpdate(mediaMessage({ ...PHOTO, caption: "look" }));
+    expect(await events(t.gateway, "a")).toEqual([]);
+    expect(t.sent.at(-1)).toMatchObject({ threadId: 77 });
+    expect(t.sent.at(-1)?.text).toContain("图片下载失败");
+    expect(t.sent.at(-1)?.text).toContain("404");
+  });
+
+  it("answers other media with a notice and drops the caption", async () => {
+    const savePhoto = vi.fn(async () => "/cache/p.jpg");
+    const t = setup(undefined, { savePhoto });
+    await t.gateway.open({ connId: "a", cwd: "/work/alpha" });
+    await t.gateway.handleUpdate(mediaMessage({ document: { file_id: "d" }, caption: "read this" }));
+    await t.gateway.handleUpdate(mediaMessage({ voice: { file_id: "v" } }));
+    expect(await events(t.gateway, "a")).toEqual([]);
+    expect(savePhoto).not.toHaveBeenCalled();
+    expect(t.sent.map(m => m.text)).toEqual([expect.stringContaining("暂不支持文件"), expect.stringContaining("暂不支持语音")]);
+  });
+
+  it("answers a photo with a notice when the agent cannot take photos (Codex)", async () => {
+    const t = setup();
+    await t.gateway.open({ connId: "a", cwd: "/work/alpha" });
+    await t.gateway.handleUpdate(mediaMessage({ ...PHOTO, caption: "look" }));
+    expect(await events(t.gateway, "a")).toEqual([]);
+    expect(t.sent.at(-1)?.text).toContain("暂不支持图片");
+  });
+
+  it("says so for a photo in a topic whose session is offline", async () => {
+    const savePhoto = vi.fn(async () => "/cache/p.jpg");
+    const t = setup(undefined, { savePhoto });
+    await t.gateway.open({ connId: "a", cwd: "/work/alpha" });
+    t.gateway.close("a");
+    await t.gateway.handleUpdate(mediaMessage(PHOTO));
+    expect(savePhoto).not.toHaveBeenCalled();
+    expect(t.sent.at(-1)?.text).toContain("/work/alpha");
+  });
+});
+
+describe("BotGateway albums (thin)", () => {
+  const albumPhoto = (group: string, id: string, extra: Record<string, unknown> = {}) =>
+    mediaMessage({ media_group_id: group, photo: [{ file_id: id, file_size: 1 }], ...extra });
+  const savePath = async (_cwd: string, fileId: string) => `/cache/${fileId}.jpg`;
+
+  it("waits 5 s after each item, then prompts once with the caption and every path in order", async () => {
+    vi.useFakeTimers();
+    const t = setup(undefined, { savePhoto: savePath });
+    await t.gateway.open({ connId: "a", cwd: "/work/alpha" });
+    await t.gateway.handleUpdate(albumPhoto("g1", "p1", { caption: "compare these" }));
+    await vi.advanceTimersByTimeAsync(4_000);
+    await t.gateway.handleUpdate(albumPhoto("g1", "p2"));
+    await vi.advanceTimersByTimeAsync(4_000);
+    await t.gateway.handleUpdate(albumPhoto("g1", "p3"));
+    await vi.advanceTimersByTimeAsync(4_900);
+    expect(await events(t.gateway, "a")).toEqual([]);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await events(t.gateway, "a")).toEqual([{ type: "prompt", text: [
+      "compare these", "[Telegram 图片 1/3] /cache/p1.jpg", "[Telegram 图片 2/3] /cache/p2.jpg", "[Telegram 图片 3/3] /cache/p3.jpg",
+    ].join("\n") }]);
+    expect(t.sent).toEqual([]);
+  });
+
+  it("keeps two albums apart", async () => {
+    vi.useFakeTimers();
+    const t = setup(undefined, { savePhoto: savePath });
+    await t.gateway.open({ connId: "a", cwd: "/work/alpha" });
+    await t.gateway.handleUpdate(albumPhoto("g1", "a1"));
+    await t.gateway.handleUpdate(albumPhoto("g2", "b1"));
+    await t.gateway.handleUpdate(albumPhoto("g1", "a2"));
+    await vi.advanceTimersByTimeAsync(5_000);
+    const texts = (await events(t.gateway, "a")).map(e => e.type === "prompt" ? e.text : "");
+    // g2's last item came first, so it is handed over first.
+    expect(texts).toEqual(["[Telegram 图片] /cache/b1.jpg", "[Telegram 图片 1/2] /cache/a1.jpg\n[Telegram 图片 2/2] /cache/a2.jpg"]);
+  });
+
+  it("handles an album at once when it reaches Telegram's 10-item limit", async () => {
+    vi.useFakeTimers();
+    const t = setup(undefined, { savePhoto: savePath });
+    await t.gateway.open({ connId: "a", cwd: "/work/alpha" });
+    for (let i = 1; i <= 10; i++) await t.gateway.handleUpdate(albumPhoto("g1", `p${i}`));
+    const got = await events(t.gateway, "a");
+    expect(got).toHaveLength(1);
+    expect(got[0]).toMatchObject({ type: "prompt", text: expect.stringContaining("[Telegram 图片 10/10] /cache/p10.jpg") });
+  });
+
+  it("sends the photos that saved and names the one that failed", async () => {
+    vi.useFakeTimers();
+    const t = setup(undefined, { savePhoto: async (cwd, id) => { if (id === "p2") throw new Error("timeout"); return savePath(cwd, id); } });
+    await t.gateway.open({ connId: "a", cwd: "/work/alpha" });
+    for (const id of ["p1", "p2", "p3"]) await t.gateway.handleUpdate(albumPhoto("g1", id));
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(await events(t.gateway, "a")).toEqual([{ type: "prompt",
+      text: "[Telegram 图片 1/3] /cache/p1.jpg\n[Telegram 图片 3/3] /cache/p3.jpg" }]);
+    expect(t.sent.map(m => m.text)).toEqual([expect.stringContaining("第 2/3 张图片下载失败：timeout")]);
+  });
+
+  it("skips a video in an album with a notice and sends the photos", async () => {
+    vi.useFakeTimers();
+    const t = setup(undefined, { savePhoto: savePath });
+    await t.gateway.open({ connId: "a", cwd: "/work/alpha" });
+    await t.gateway.handleUpdate(albumPhoto("g1", "p1"));
+    await t.gateway.handleUpdate(mediaMessage({ media_group_id: "g1", video: { file_id: "v1" } }));
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(await events(t.gateway, "a")).toEqual([{ type: "prompt", text: "[Telegram 图片] /cache/p1.jpg" }]);
+    expect(t.sent.map(m => m.text)).toEqual([expect.stringContaining("暂不支持视频，已跳过")]);
+  });
+
+  it("answers a whole album once when the agent cannot take photos (Codex)", async () => {
+    vi.useFakeTimers();
+    const t = setup();
+    await t.gateway.open({ connId: "a", cwd: "/work/alpha" });
+    for (const id of ["p1", "p2", "p3"]) await t.gateway.handleUpdate(albumPhoto("g1", id));
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(await events(t.gateway, "a")).toEqual([]);
+    expect(t.sent.map(m => m.text)).toEqual([expect.stringContaining("暂不支持图片，本条未处理")]);
   });
 });
 

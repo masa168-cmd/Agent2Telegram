@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Claude Code sessions now announce themselves in their topic when they connect, as Codex does: "Claude Code 会话已接入。本话题对应目录 ~/…". The gateway remembers the last announced session per directory, so reconnects of the same session stay quiet; a new session, or the first connect after a gateway restart, is announced; a `/restart` keeps its own "已重启" notice. Pi and Codex are unchanged.
+
 - Claude Code topics take files too (documents, "send as file"): the gateway saves them next to photos under a cleaned ASCII form of their name with the extension, and prompts with `[Telegram 文件] <original name> → <path>`; a group of files, or photos with files, becomes one prompt like an album. A file over the Bot API's 20 MB download limit gets a "文件太大" notice without a download attempt. Codex still answers files with a notice. `GatewayDeps.savePhoto` is now `saveFile(cwd, fileId, fileName?)`.
 
 - Claude Code `/usage` and `/status` in Telegram: the plan's 5-hour and weekly limits (plus the Sonnet/Opus weekly ones when present) are now read where the terminal's `/usage` reads them (`https://api.anthropic.com/api/oauth/usage`, an undocumented endpoint), through `$.session.authorize()` so the plugin never sees the login. The engine's per-response readings, which can be empty, remain the fallback; with neither, the reply says to check `/usage` in the terminal instead of showing only the cost. Reset times are rounded to the minute.

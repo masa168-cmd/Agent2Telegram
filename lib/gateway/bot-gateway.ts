@@ -1,4 +1,5 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { forumBotId, forumTopicKey, forumTopicName } from "../core/forum-binding.ts";
 import { escapeHtml } from "../core/html.ts";
@@ -159,6 +160,12 @@ function isThreadGone(error: unknown): boolean {
   return /thread not found|TOPIC_DELETED|TOPIC_CLOSED/i.test(error instanceof Error ? error.message : String(error));
 }
 
+/** `~/main` inside home, else the absolute path (as Codex shows it). */
+function shownDir(cwd: string): string {
+  const home = homedir();
+  return cwd === home || cwd.startsWith(`${home}/`) ? `~${cwd.slice(home.length)}` : cwd;
+}
+
 function defaultPidAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 }
@@ -174,6 +181,8 @@ export class BotGateway {
   private readonly albums = new Map<string, MediaBatch & { timer?: ReturnType<typeof setTimeout> }>();
   /** Claude sessions that asked for /restart: say "restarted" when they open again. */
   private readonly restarting = new Set<string>();
+  /** The Claude session last announced in each directory's topic: its reconnects stay quiet. */
+  private readonly announced = new Map<string, string>();
 
   constructor(private readonly deps: GatewayDeps) {}
 
@@ -291,7 +300,11 @@ export class BotGateway {
     }
     if (request.claudeSessionId && this.restarting.delete(request.claudeSessionId)) {
       await this.noticeTo(session, "Claude Code 已重启，对话已接上。").catch(() => undefined);
+    } else if (!this.rich && request.claudeSessionId && this.announced.get(cwd) !== request.claudeSessionId) {
+      // Pi (rich) posts its own divider; Codex says it in codex.ts.
+      await this.noticeTo(session, `${this.label} 会话已接入。本话题对应目录 ${shownDir(cwd)}`).catch(() => undefined);
     }
+    if (!this.rich && request.claudeSessionId && session.threadId !== undefined) this.announced.set(cwd, request.claudeSessionId);
     return { ok: true, ...(session.threadId === undefined ? {} : { threadId: session.threadId }), notices };
   }
 

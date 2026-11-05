@@ -1,5 +1,5 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TelegramConfig, TelegramUpdate } from "../../core/types.ts";
@@ -184,6 +184,33 @@ describe("BotGateway sessions and topics", () => {
     // A session whose process died is replaced.
     live.delete(300);
     expect(await t.gateway.open({ connId: "b", cwd: "/work/alpha", pid: 200, claudeSessionId: "s2" })).toMatchObject({ ok: true });
+  });
+
+  it("announces a new Claude session in its topic once; reconnects of the same session stay quiet", async () => {
+    const t = setup();
+    const announced = () => t.sent.filter(m => m.text.includes("会话已接入"));
+    await t.gateway.open({ connId: "a", cwd: "/work/alpha", pid: 100, claudeSessionId: "s1" });
+    expect(announced()).toEqual([{ chatId: CHAT, text: "Claude Code 会话已接入。本话题对应目录 /work/alpha", threadId: 77 }]);
+    // The same session reconnecting (poll timeout, module reload) says nothing more.
+    await t.gateway.open({ connId: "a", cwd: "/work/alpha", pid: 100, claudeSessionId: "s1" });
+    await t.gateway.open({ connId: "a2", cwd: "/work/alpha", pid: 100, claudeSessionId: "s1" });
+    expect(announced()).toHaveLength(1);
+    // A new session in the directory (exit and start again) is announced.
+    t.gateway.close("a2");
+    await t.gateway.open({ connId: "b", cwd: "/work/alpha", pid: 200, claudeSessionId: "s2" });
+    expect(announced()).toHaveLength(2);
+    // Directories under home read as ~/…
+    await t.gateway.open({ connId: "c", cwd: join(homedir(), "proj"), pid: 300, claudeSessionId: "s3" });
+    expect(announced().at(-1)?.text).toBe("Claude Code 会话已接入。本话题对应目录 ~/proj");
+  });
+
+  it("does not announce Pi (rich) or sessions without a Claude session id (Codex)", async () => {
+    const pi = setup(undefined, { rich: true });
+    await pi.gateway.open({ connId: "p", cwd: "/work/alpha", pid: 100, claudeSessionId: "s1" });
+    expect(pi.sent.filter(m => m.text.includes("会话已接入"))).toEqual([]);
+    const codex = setup();
+    await codex.gateway.open({ connId: "codex:t1", cwd: "/work/alpha" });
+    expect(codex.sent.filter(m => m.text.includes("会话已接入"))).toEqual([]);
   });
 
   it("routes each topic's text to its own session", async () => {
@@ -474,6 +501,8 @@ describe("BotGateway commands", () => {
     expect(t.sent.at(-1)?.text).toContain("正在重启");
     await t.gateway.open({ connId: "b2", cwd: "/work/beta", pid: 201, pane: "%3", modDir: "/m", claudeSessionId: "s9" });
     expect(t.sent.at(-1)?.text).toContain("已重启");
+    // Only the first open of s9 was announced; the restart says "restarted" instead.
+    expect(t.sent.filter(m => m.text.includes("会话已接入"))).toHaveLength(1);
   });
 });
 

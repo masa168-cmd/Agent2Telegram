@@ -102,12 +102,28 @@ async function askTelegram(
   }
 }
 
+/** A card shows the start of a long input; the terminal dialog has all of it. */
+const CARD_MAX_LINES = 8
+const CARD_MAX_CHARS = 400
+
+function clip(text: string): string {
+  const lines = text.split('\n')
+  const shown = lines.slice(0, CARD_MAX_LINES).join('\n').slice(0, CARD_MAX_CHARS)
+  return shown.length < text.length ? `${shown}\n…（共 ${lines.length} 行，完整内容见终端）` : shown
+}
+
 function describeInput(tool: string, input: unknown): string {
   const record = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>
   for (const key of ['command', 'file_path', 'url', 'path', 'pattern']) {
-    if (typeof record[key] === 'string') return String(record[key])
+    if (typeof record[key] === 'string') return clip(String(record[key]))
   }
-  try { return JSON.stringify(input, null, 1).slice(0, 800) } catch { return tool }
+  try { return clip(JSON.stringify(input, null, 1)) } catch { return tool }
+}
+
+/** The tool's own one-line description of the call (Bash, Agent), when it has one. */
+function describeCall(input: unknown): string {
+  const description = (input && typeof input === 'object' ? (input as Record<string, unknown>).description : undefined)
+  return typeof description === 'string' && description.trim() ? `：${description.trim().slice(0, 120)}` : ''
 }
 
 function formatReset(iso: string | undefined): string {
@@ -361,7 +377,7 @@ export const register: Register = (on) => {
   // hook, and the Telegram buttons are taken back.
   on('classic.PermissionRequest', async ($, e, next) => {
     if (!connected || PERSON_TOOLS.has(e.tool_name)) return next(e)
-    const answer = await askTelegram($, next.signal, `Claude 请求使用 ${e.tool_name}`,
+    const answer = await askTelegram($, next.signal, `Claude 请求使用 ${e.tool_name}${describeCall(e.tool_input)}`,
       describeInput(e.tool_name, e.tool_input), [ALLOW, DENY])
     if (answer === ALLOW) return { decision: { behavior: 'allow' } }
     if (answer === DENY) return { decision: { behavior: 'deny', message: '用户在 Telegram 中拒绝了这次操作。' } }
